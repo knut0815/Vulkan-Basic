@@ -57,6 +57,11 @@ private:
 
 	void createInstance()
 	{
+		if (mEnableValidationLayers && !checkValidationLayerSupport())
+		{
+			throw std::runtime_error("One or more validation layers specified by this application are not supported.");
+		}
+		
 		/*
 
 		In Vulkan, an instance is the connection between your application and the Vulkan library
@@ -97,19 +102,19 @@ private:
 
 		*/
 
-		unsigned int glfwExtensionCount = 0;
-		const char** glfwExtensions;
-		glfwExtensions = glfwGetRequiredInstanceExtensions(&glfwExtensionCount);
+		auto extensions = getRequiredExtensions();
+		createInfo.enabledExtensionCount = extensions.size();
+		createInfo.ppEnabledExtensionNames = extensions.data();
 
-		std::cout << "Extensions required by GLFW:" << std::endl;
-		for (size_t i = 0; i < glfwExtensionCount; ++i)
+		if (mEnableValidationLayers)
 		{
-			std::cout << "\t" << glfwExtensions[i] << std::endl;
+			createInfo.enabledLayerCount = mValidationLayers.size();
+			createInfo.ppEnabledLayerNames = mValidationLayers.data();
 		}
-
-		createInfo.enabledExtensionCount = glfwExtensionCount;
-		createInfo.ppEnabledExtensionNames = glfwExtensions;
-		createInfo.enabledLayerCount = 0;
+		else
+		{
+			createInfo.enabledLayerCount = 0;
+		}
 
 		/*
 		
@@ -164,10 +169,77 @@ private:
 
 	}
 
+	bool checkValidationLayerSupport()
+	{
+		/*
+		
+		The Vulkan API is designed around the idea of minimal driver overhead. As a result, there is very 
+		limited error checking enabled by default. Validation layers are optional components that hook into
+		Vulkan function calls to apply additional operations (i.e. checking the values of function parameters
+		against the specification to detect misuse, tracking the creation and destruction of objects to find
+		resource leaks, etc.).
+
+		Vulkan does not come with any validation layers built-in, but the LunarG SDK provides a nice set of
+		layers that will check common errors. Validation layers can only be used if they are installed on
+		the system. A layer is enabled by specifying its name.
+
+		We want to check if all of the requested validation layers are available on this system. To do
+		this, we call vkEnumerateInstanceLayerProperties.
+
+		*/
+
+		uint32_t layerCount;
+		vkEnumerateInstanceLayerProperties(&layerCount, nullptr);
+
+		std::vector<VkLayerProperties> availableLayers(layerCount);
+		vkEnumerateInstanceLayerProperties(&layerCount, availableLayers.data());
+
+		for (const char* layerName : mValidationLayers)
+		{
+			auto predicate = [&](const VkLayerProperties &prop) { return strcmp(layerName, prop.layerName); };
+			if (std::find_if(availableLayers.begin(), availableLayers.end(), predicate) == availableLayers.end())
+			{
+				return false;
+			}
+		}
+		return true;
+	}
+
+	std::vector<const char*> getRequiredExtensions()
+	{
+		std::vector<const char*> extensions;
+		
+		unsigned int glfwExtensionCount = 0;
+		const char** glfwExtensions;
+		glfwExtensions = glfwGetRequiredInstanceExtensions(&glfwExtensionCount);
+
+		std::cout << "Adding extensions required by GLFW:" << std::endl;
+		for (unsigned int i = 0; i < glfwExtensionCount; ++i)
+		{
+			std::cout << "\t" << glfwExtensions[i] << std::endl;
+			extensions.push_back(glfwExtensions[i]);
+		}
+
+		if (mEnableValidationLayers)
+		{
+			extensions.push_back(VK_EXT_DEBUG_REPORT_EXTENSION_NAME);
+		}
+
+		return extensions;
+	}
+
 	GLFWwindow *mWindow;
 	const int mWidth = 800;
 	const int mHeight = 600;
 	vk::Deleter<VkInstance> mInstance{vkDestroyInstance};
+	const std::vector<const char*> mValidationLayers{ "VK_LAYER_LUNARG_standard_validation" }; // only active if we're in debug mode
+
+#ifdef NDEBUG
+	const bool mEnableValidationLayers = false;
+#else
+	const bool mEnableValidationLayers = true;
+#endif
+
 };
 
 int main()
