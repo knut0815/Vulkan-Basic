@@ -46,6 +46,8 @@ private:
 	{
 		createInstance();
 		setupDebugCallback();
+		pickPhysicalDevice();
+		createLogicalDevice();
 	}
 
 	void mainLoop()
@@ -56,6 +58,14 @@ private:
 		}
 	}
 
+	//! a struct for determining which queue families a physical device supports
+	struct QueueFamilyIndices
+	{
+		int graphicsFamily = -1;
+		bool isComplete() { return graphicsFamily >= 0; }
+	};
+
+	//! create an instance, which includes extensions and optional validation layers
 	void createInstance()
 	{
 		if (mEnableValidationLayers && !checkValidationLayerSupport())
@@ -135,6 +145,7 @@ private:
 
 	}
 
+	//! check if all of the request validation layers are installed on this system
 	bool checkValidationLayerSupport()
 	{
 		/*
@@ -171,6 +182,7 @@ private:
 		return true;
 	}
 
+	//! retrieve the list of extensions required by GLFW
 	std::vector<const char*> getRequiredExtensions()
 	{
 		/*
@@ -186,6 +198,7 @@ private:
 		glfwExtensions = glfwGetRequiredInstanceExtensions(&glfwExtensionCount);
 
 		std::cout << "Adding extensions required by GLFW:" << std::endl;
+
 		for (unsigned int i = 0; i < glfwExtensionCount; ++i)
 		{
 			std::cout << "\t" << glfwExtensions[i] << std::endl;
@@ -200,6 +213,7 @@ private:
 		return extensions;
 	}
 
+	//! retrieve the list of all supported extensions on this system
 	std::vector<VkExtensionProperties> getAvailableExtensions()
 	{
 		/*
@@ -222,6 +236,7 @@ private:
 		return extensions;
 	}
 
+	//! creates a callback object
 	void setupDebugCallback()
 	{	
 		/*
@@ -246,7 +261,7 @@ private:
 		VkDebugReportCallbackCreateInfoEXT createInfo = {};
 		createInfo.sType = VK_STRUCTURE_TYPE_DEBUG_REPORT_CALLBACK_CREATE_INFO_EXT;
 		createInfo.flags = VK_DEBUG_REPORT_ERROR_BIT_EXT | VK_DEBUG_REPORT_WARNING_BIT_EXT;
-		createInfo.pfnCallback = (PFN_vkDebugReportCallbackEXT)debugCallback;
+		createInfo.pfnCallback = (PFN_vkDebugReportCallbackEXT)sDebugCallback;
 
 		if (CreateDebugReportCallbackEXT(mInstance, &createInfo, nullptr, &mCallback) != VK_SUCCESS) // calls CreateDebugReportCallbackEXT
 		{
@@ -254,8 +269,8 @@ private:
 		}
 	}
 
-	//! explicitly loads a function from the Vulkan extension for use in our program
-	VkResult CreateDebugReportCallbackEXT(
+	//! explicitly loads a function from the Vulkan extension for creating a VkDebugReportCallbackEXT object
+	static VkResult CreateDebugReportCallbackEXT(
 		VkInstance instance,
 		const VkDebugReportCallbackCreateInfoEXT* pCreateInfo,
 		const VkAllocationCallbacks* pAllocator,
@@ -286,14 +301,203 @@ private:
 		}
 	}
 
+	//! choose a physical device (GPU) to use for rendering
+	void pickPhysicalDevice()
+	{
+		/*
+		
+		We need to look for and select a graphics card in the system that supports all of the features
+		we need for rendering. We can select more than one graphics card, but in this example, we'll
+		stick to the first one found.
+
+		We call vkEnumeratePhysicalDevices twice: once to count the number of available devices (GPUs) 
+		and once to fill a vector with all available VkPhysicalDevice handles. Then, we loop through
+		each device to see if it is suitable for the operations we want to perform, since not all 
+		graphics cards are created equal!
+
+		*/
+
+		uint32_t deviceCount = 0;
+		vkEnumeratePhysicalDevices(mInstance, &deviceCount, nullptr);
+
+		if (deviceCount == 0)
+		{
+			throw std::runtime_error("Failed to find GPUs with Vulkan support.");
+		}
+
+		std::vector<VkPhysicalDevice> devices(deviceCount);
+		vkEnumeratePhysicalDevices(mInstance, &deviceCount, devices.data());
+
+		for (const auto& device : devices)
+		{
+			if (isDeviceSuitable(device))
+			{
+				mPhysicalDevice = device; // simply select the first suitable device
+				break;
+			}
+		}
+
+		if (mPhysicalDevice == VK_NULL_HANDLE)
+		{
+			throw std::runtime_error("Failed to find a suitable GPU.");
+		}
+	}
+
+	//! given a device, determine whether it is suitable for rendering (mostly a placeholder at this point)
+	bool isDeviceSuitable(VkPhysicalDevice device)
+	{
+		/*
+		
+		Basic device properties (name, type, and supported Vulkan version) can be queried using
+		vkGetPhysicalDeviceProperties. The support for optional features (i.e. texture compression,
+		64-bit floats, multi-viewport rendering for VR, etc.) can be queried with vkGetPhysicalDeviceFeatures.
+		
+		In a more advanced application, we could give each device a score and pick the highest one.
+		That way we could favor a dedicated graphics card by giving it a high score. For now, we always 
+		return true.
+
+		*/
+		VkPhysicalDeviceProperties deviceProperties;
+		vkGetPhysicalDeviceProperties(device, &deviceProperties);
+		
+		VkPhysicalDeviceFeatures deviceFeatures;
+		vkGetPhysicalDeviceFeatures(device, &deviceFeatures);
+
+		// as an example, we test to see if we're using a discrete graphics card that supports geometry shaders
+		if (deviceProperties.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU && deviceFeatures.geometryShader)
+		{
+			std::cout << "Geometry shaders are supported on this graphics card." << std::endl;
+		}
+
+		// make sure this device supports the graphics queue family
+		QueueFamilyIndices indices = findQueueFamilies(device);
+
+		return indices.isComplete();
+	}
+
+	//! determines which queue families the specified physical device supports
+	QueueFamilyIndices findQueueFamilies(VkPhysicalDevice device)
+	{
+		/*
+		
+		Commands in Vulkan need to be submitted to a queue. There are different types of queues that 
+		originate from different queue families, and each family of queues allows only a certain subset
+		of commands. For example, there could be a queue family that only allows processing of compute
+		commands or one that only allows memory transfer related commands.
+
+		We need to check which queue families are supported by the device and which one of these supports
+		the commands that we want to use. Right now, we'll only look for a queue that supports graphics
+		commands.
+
+		The VkQueueFamilyProperties struct contains some details about the queue family, including the
+		type of operations that are supported and the number of queues that can be created based on that
+		family.
+			
+		*/
+
+		QueueFamilyIndices indices;
+
+		uint32_t queueFamilyCount = 0;
+		vkGetPhysicalDeviceQueueFamilyProperties(device, &queueFamilyCount, nullptr);
+
+		std::vector<VkQueueFamilyProperties> queueFamilies(queueFamilyCount);
+
+		vkGetPhysicalDeviceQueueFamilyProperties(device, &queueFamilyCount, queueFamilies.data());
+
+		int i = 0;
+		for (const auto& queueFamily : queueFamilies)
+		{
+			if (queueFamily.queueCount > 0 && queueFamily.queueFlags & VK_QUEUE_GRAPHICS_BIT)
+			{
+				indices.graphicsFamily = i;
+			}
+			if (indices.isComplete())
+			{
+				break;
+			}
+			i++;
+		}
+
+		return indices;
+	}
+
+	void createLogicalDevice()
+	{
+		/*
+		
+		The creation of a logical device involves specifying a bunch of details in structs. VkDeviceQueueCreateInfo
+		describes the number of queues we want for a single queue family. Right now we're only interested
+		in a queue with graphics capabilities.
+
+		Current drivers will only allow you to create a low number of queues within each queue family, but
+		you don't really need more than one because you can create all of the command buffers on multiple
+		threads and then submit them all at once on the main thread with a single low-overhead call. Vulkan
+		also lets you assign priorities to queues to influence the scheduling of command buffer execution using
+		floating point numbers between 0.0f and 1.0f. This is required even if there is only a single queue.
+		
+		Next, we need to specify the set of device features that we'll be using. These are the features
+		that we queried support for with vkGetPhysicalDeviceFeatures. Right now, we can simply define it and
+		leave everything to VK_FALSE.
+
+		The rest of the VkDeviceCreateInfo struct looks similar to the VkInstanceCreateInfo struct and 
+		requires you to specify extensions and validation layers. This time, however, they are device
+		specific. An example of a device specific extension is VK_KHR_swapchain, which allows you to 
+		present rendered images from that device to windows. It is possible that there are Vulkan devices 
+		in the system that lack this ability, for example because they only support compute operations.
+
+		*/
+
+		QueueFamilyIndices indices = findQueueFamilies(mPhysicalDevice);
+
+		float queuePriority = 1.0f;
+
+		VkDeviceQueueCreateInfo queueCreateInfo = {};
+		queueCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
+		queueCreateInfo.queueFamilyIndex = indices.graphicsFamily;
+		queueCreateInfo.queueCount = 1;
+		queueCreateInfo.pQueuePriorities = &queuePriority;
+
+		VkPhysicalDeviceFeatures deviceFeatures = {};
+
+		VkDeviceCreateInfo createInfo = {};
+		createInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
+		createInfo.pQueueCreateInfos = &queueCreateInfo;
+		createInfo.queueCreateInfoCount = 1;
+		createInfo.pEnabledFeatures = &deviceFeatures;
+		
+		createInfo.enabledExtensionCount = 0;
+		
+		if (mEnableValidationLayers)
+		{
+			createInfo.enabledLayerCount = mValidationLayers.size();
+			createInfo.ppEnabledLayerNames = mValidationLayers.data();
+		}
+		else
+		{
+			createInfo.enabledLayerCount = 0;
+		}
+
+		if (vkCreateDevice(mPhysicalDevice, &createInfo, nullptr, &mDevice) != VK_SUCCESS)
+		{
+			throw std::runtime_error("Failed to create logical device.");
+		}
+
+		// pass the logical device, queue family, queue index, and a pointer to the variable where we'll store the queue handle
+		// the index is 0 because we are only using one queue from this family
+		vkGetDeviceQueue(mDevice, indices.graphicsFamily, 0, &mGraphicsQueue);
+	}
+
 	GLFWwindow *mWindow;
 	const int mWidth = 800;
 	const int mHeight = 600;
-	vk::Deleter<VkInstance> mInstance{vkDestroyInstance};
+	vk::Deleter<VkInstance> mInstance{ vkDestroyInstance };
 	vk::Deleter<VkDebugReportCallbackEXT> mCallback{ mInstance, DestroyDebugReportCallbackEXT };
-	
-	static VkBool32 debugCallback (
-		VkDebugReportFlagsEXT flags,			// type of the message, i.e. VK_DEBUG_REPORT_INFORMATION_BIT_EXT
+	VkPhysicalDevice mPhysicalDevice{ VK_NULL_HANDLE };	// implicitly destroyed when the VkInstance is destroyed, so we don't need to add a delete wrapper
+	vk::Deleter<VkDevice> mDevice{ vkDestroyDevice }; // needs to be declared below the VkInstance, since it must be destroyed before the instance is cleaned up
+	VkQueue mGraphicsQueue; // automatically created and destroyed alongside the logical device
+
+	static VkBool32 sDebugCallback (
+		VkDebugReportFlagsEXT flags,			// type of the message, i.e. VK_DEBUG_REPORT_INFORMATION_BIT_EXT, VK_DEBUG_REPORT_WARNING_BIT_EXT, etc.
 		VkDebugReportObjectTypeEXT objectType,	// type of the object that is the subject of the message, i.e. VK_DEBUG_REPORT_OBJECT_TYPE_DEVICE_EXT if object is a VkPhysicalDevice
 		uint64_t object,						// handle to the actual Vulkan object, i.e. a VkPhysicalDevice
 		size_t location,
