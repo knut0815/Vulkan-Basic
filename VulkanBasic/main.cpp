@@ -45,6 +45,7 @@ private:
 	void initVulkan()
 	{
 		createInstance();
+		setupDebugCallback();
 	}
 
 	void mainLoop()
@@ -117,41 +118,6 @@ private:
 		}
 
 		/*
-		
-		We might want to check for optional (non-essential) extensions. To retrieve a list of supported
-		extensions before creating an instance, we call vkEnumerateInstanceExtensionProperties, which 
-		takes a pointer to a variable that stores the number of extensions and an array of VkExtensionProperties
-		to store the details of the extensions. It also takes an optional first parameter that allows
-		us to filter extensions by a specific validation layer, which we ignore for now.
-
-		*/
-
-		uint32_t extensionCount = 0;
-		vkEnumerateInstanceExtensionProperties(nullptr, &extensionCount, nullptr); // find number of supported extensions
-		
-		std::vector<VkExtensionProperties> extensions(extensionCount);
-		
-		vkEnumerateInstanceExtensionProperties(nullptr, &extensionCount, extensions.data()); // fill vector with extension data
-		
-		std::cout << "Available Vulkan extensions:" << std::endl;
-		for (const auto& extension : extensions)
-		{
-			std::cout << "\t" << extension.extensionName << std::endl;
-		}
-
-		
-		for (size_t i = 0; i < glfwExtensionCount; ++i)
-		{
-			auto predicate = [&](const VkExtensionProperties &prop) { return strcmp(glfwExtensions[i], prop.extensionName); };
-			
-			if (std::find_if(extensions.begin(), extensions.end(), predicate) == extensions.end())
-			{
-				throw std::runtime_error("One or more extensions required by GLFW are not supported.");
-			}
-		}
-		std::cout << "All extensions required by GLFW are supported on this device." << std::endl;
-
-		/*
 
 		We can now create our VkInstance. The general pattern that object creation function parameters
 		in Vulkan follow is:
@@ -207,8 +173,14 @@ private:
 
 	std::vector<const char*> getRequiredExtensions()
 	{
-		std::vector<const char*> extensions;
+		/*
 		
+		Get the list of extensions that are required by GLFW. We optionally add the VK_EXT_debug_report extension,
+		which lets us receive debug messages from Vulkan.
+
+		*/
+
+		std::vector<const char*> extensions;
 		unsigned int glfwExtensionCount = 0;
 		const char** glfwExtensions;
 		glfwExtensions = glfwGetRequiredInstanceExtensions(&glfwExtensionCount);
@@ -228,10 +200,112 @@ private:
 		return extensions;
 	}
 
+	std::vector<VkExtensionProperties> getAvailableExtensions()
+	{
+		/*
+
+		We might want to check for optional (non-essential) extensions. To retrieve a list of supported
+		extensions before creating an instance, we call vkEnumerateInstanceExtensionProperties, which
+		takes a pointer to a variable that stores the number of extensions and an array of VkExtensionProperties
+		to store the details of the extensions. It also takes an optional first parameter that allows
+		us to filter extensions by a specific validation layer, which we ignore for now.
+
+		*/
+
+		uint32_t extensionCount = 0;
+		vkEnumerateInstanceExtensionProperties(nullptr, &extensionCount, nullptr); // find number of supported extensions
+
+		std::vector<VkExtensionProperties> extensions(extensionCount);
+
+		vkEnumerateInstanceExtensionProperties(nullptr, &extensionCount, extensions.data()); // fill vector with extension data
+
+		return extensions;
+	}
+
+	void setupDebugCallback()
+	{	
+		/*
+		
+		Even a debug callback in Vulkan is managed by a handle that needs to be explicitly created and 
+		destroyed. First, we need to fill in a structure with details about the callback.
+
+		The flags field allows you to filter which types of messages you would like to receive. The pfnCallback
+		field specifies the pointer to the callback function. You can optionally pass a pointer to the pUserData
+		field which will be passed along to the callback function via the userData parameter. You could use 
+		this to pass a pointer to the application class, for example.
+
+		This struct should be passed to the vkCreateDebugReportCallbackEXT function to create the VkDebugReportCallbackEXT
+		object. Unfortunately, because this function is an extension function, it is not automatically loaded. We 
+		have to look up its address ourselves using vkGetInstanceProcAddr. We use our own proxy function called
+		CreateDebugReportCallbackEXT that handles this in the background.
+
+		*/
+
+		if (!mEnableValidationLayers) return;
+
+		VkDebugReportCallbackCreateInfoEXT createInfo = {};
+		createInfo.sType = VK_STRUCTURE_TYPE_DEBUG_REPORT_CALLBACK_CREATE_INFO_EXT;
+		createInfo.flags = VK_DEBUG_REPORT_ERROR_BIT_EXT | VK_DEBUG_REPORT_WARNING_BIT_EXT;
+		createInfo.pfnCallback = (PFN_vkDebugReportCallbackEXT)debugCallback;
+
+		if (CreateDebugReportCallbackEXT(mInstance, &createInfo, nullptr, &mCallback) != VK_SUCCESS) // calls CreateDebugReportCallbackEXT
+		{
+			throw std::runtime_error("Failed to setup debug callback.");
+		}
+	}
+
+	//! explicitly loads a function from the Vulkan extension for use in our program
+	VkResult CreateDebugReportCallbackEXT(
+		VkInstance instance,
+		const VkDebugReportCallbackCreateInfoEXT* pCreateInfo,
+		const VkAllocationCallbacks* pAllocator,
+		VkDebugReportCallbackEXT* pCallback)
+	{
+		auto func = (PFN_vkCreateDebugReportCallbackEXT)vkGetInstanceProcAddr(instance, "vkCreateDebugReportCallbackEXT");
+		if (func != nullptr)
+		{
+			return func(instance, pCreateInfo, pAllocator, pCallback);
+		}
+		else
+		{
+			return VK_ERROR_EXTENSION_NOT_PRESENT;
+		}
+	}
+
+	//! explicitly loads a function from the Vulkan extension for cleaning up a VkDebugReportCallbackEXT object
+	static void DestroyDebugReportCallbackEXT(
+		VkInstance instance,
+		VkDebugReportCallbackEXT callback,
+		const VkAllocationCallbacks* pAllocator
+		)
+	{
+		auto func = (PFN_vkDestroyDebugReportCallbackEXT)vkGetInstanceProcAddr(instance, "vkDestroyDebugReportCallbackEXT");
+		if (func != nullptr)
+		{
+			func(instance, callback, pAllocator);
+		}
+	}
+
 	GLFWwindow *mWindow;
 	const int mWidth = 800;
 	const int mHeight = 600;
 	vk::Deleter<VkInstance> mInstance{vkDestroyInstance};
+	vk::Deleter<VkDebugReportCallbackEXT> mCallback{ mInstance, DestroyDebugReportCallbackEXT };
+	
+	static VkBool32 debugCallback (
+		VkDebugReportFlagsEXT flags,			// type of the message, i.e. VK_DEBUG_REPORT_INFORMATION_BIT_EXT
+		VkDebugReportObjectTypeEXT objectType,	// type of the object that is the subject of the message, i.e. VK_DEBUG_REPORT_OBJECT_TYPE_DEVICE_EXT if object is a VkPhysicalDevice
+		uint64_t object,						// handle to the actual Vulkan object, i.e. a VkPhysicalDevice
+		size_t location,
+		int32_t code,
+		const char* layerPrefix,
+		const char* messsage,					// the debug message
+		void* userData)							// you can pass your own userData to the callback
+	{
+		std::cerr << "Validation layer: " << messsage << std::endl;
+		return VK_FALSE;
+	}
+
 	const std::vector<const char*> mValidationLayers{ "VK_LAYER_LUNARG_standard_validation" }; // only active if we're in debug mode
 
 #ifdef NDEBUG
