@@ -14,6 +14,7 @@ We would write:
 	vk::Deleter<VkInstance> instance{vkDestroyInstance};
 
 */
+
 namespace vk
 {
 	template<typename T>

@@ -1258,7 +1258,7 @@ private:
 		return buffer;
 	}
 
-	//! create shader module
+	//! create a shader module
 	void createShaderModule(const std::vector<char>& code, vk::Deleter<VkShaderModule>& shaderModule)
 	{
 		/*
@@ -1471,6 +1471,7 @@ private:
 		std::cout << "Successfully created semaphore objects." << std::endl;
 	}
 
+	//! render and present a frame
 	void drawFrame()
 	{
 		/*
@@ -1566,39 +1567,46 @@ private:
 		vkQueuePresentKHR(mPresentQueue, &presentInfo);
 	}
 
+	/* General */
 	GLFWwindow *mWindow;
 	const int mWidth = 800;
 	const int mHeight = 600;
 	
+	/* Instance, device, and surface related */
 	vk::Deleter<VkInstance> mInstance{ vkDestroyInstance };
-	vk::Deleter<VkDebugReportCallbackEXT> mCallback{ mInstance, DestroyDebugReportCallbackEXT };
-	
 	vk::Deleter<VkSurfaceKHR> mSurface{ mInstance, vkDestroySurfaceKHR };
+	VkPhysicalDevice mPhysicalDevice{ VK_NULL_HANDLE };									// implicitly destroyed when the VkInstance is destroyed, so we don't need to add a delete wrapper
+	vk::Deleter<VkDevice> mDevice{ vkDestroyDevice };									// needs to be declared below the VkInstance, since it must be destroyed before the instance is cleaned up
 	
-	VkPhysicalDevice mPhysicalDevice{ VK_NULL_HANDLE };	// implicitly destroyed when the VkInstance is destroyed, so we don't need to add a delete wrapper
-	vk::Deleter<VkDevice> mDevice{ vkDestroyDevice }; // needs to be declared below the VkInstance, since it must be destroyed before the instance is cleaned up
-	
-	VkQueue mGraphicsQueue; // automatically created and destroyed alongside the logical device
+	/* Queue related */
+	VkQueue mGraphicsQueue;																// automatically created and destroyed alongside the logical device
 	VkQueue mPresentQueue;
 	
+	/* Swap chain related */
 	vk::Deleter<VkSwapchainKHR> mSwapChain{ mDevice, vkDestroySwapchainKHR };
-	std::vector<VkImage> mSwapChainImages; // automatically destroyed alongside the swap chain
+	std::vector<VkImage> mSwapChainImages;												// automatically destroyed alongside the swap chain
 	VkFormat mSwapChainImageFormat;
 	VkExtent2D mSwapChainExtent;
-	std::vector<vk::Deleter<VkImageView>> mSwapChainImageViews; // unlike VkImages, VkImageView objects are created by us so we need to clean them up ourselves
+	std::vector<vk::Deleter<VkImageView>> mSwapChainImageViews;							// unlike VkImages, VkImageView objects are created by us so we need to clean them up ourselves
 
+	/* Graphics pipeline related */
 	vk::Deleter<VkRenderPass> mRenderPass{ mDevice, vkDestroyRenderPass };
-	vk::Deleter<VkPipelineLayout> mPipelineLayout{ mDevice, vkDestroyPipelineLayout }; // for describing uniform layouts: should be destroyed before the render pass above
+	vk::Deleter<VkPipelineLayout> mPipelineLayout{ mDevice, vkDestroyPipelineLayout };	// for describing uniform layouts: should be destroyed before the render pass above
 	vk::Deleter<VkPipeline> mGraphicsPipeline{ mDevice, vkDestroyPipeline };
 	std::vector<vk::Deleter<VkFramebuffer>> mSwapChainFramebuffers;
 
+	/* Command pool related */
 	vk::Deleter<VkCommandPool> mCommandPool{ mDevice, vkDestroyCommandPool };
-	std::vector<VkCommandBuffer> mCommandBuffers; // automatically freed when the VkCommandPool is destroyed
+	std::vector<VkCommandBuffer> mCommandBuffers;										// automatically freed when the VkCommandPool is destroyed
 
+	/* Semaphore related */
 	vk::Deleter<VkSemaphore> mImageAvailableSemaphore{ mDevice, vkDestroySemaphore };
 	vk::Deleter<VkSemaphore> mRenderFinishedSemaphore{ mDevice, vkDestroySemaphore };
 
+	/* Validation layer and extension related */
 	const std::vector<const char*> mDeviceExtensions{ VK_KHR_SWAPCHAIN_EXTENSION_NAME };
+
+	vk::Deleter<VkDebugReportCallbackEXT> mCallback{ mInstance, DestroyDebugReportCallbackEXT };
 
 	static VkBool32 sDebugCallback (
 		VkDebugReportFlagsEXT flags,			// type of the message, i.e. VK_DEBUG_REPORT_INFORMATION_BIT_EXT, VK_DEBUG_REPORT_WARNING_BIT_EXT, etc.
@@ -1614,7 +1622,7 @@ private:
 		return VK_FALSE;
 	}
 
-	const std::vector<const char*> mValidationLayers{ "VK_LAYER_LUNARG_standard_validation" }; // only active if we're in debug mode
+	const std::vector<const char*> mValidationLayers{ "VK_LAYER_LUNARG_standard_validation" }; 
 	
 #ifdef NDEBUG
 	const bool mEnableValidationLayers = false;
@@ -1639,10 +1647,4 @@ int main()
 	}
 
 	return EXIT_SUCCESS;
-
-	uint32_t extensionCount = 0;
-	vkEnumerateInstanceExtensionProperties(nullptr, &extensionCount, nullptr);
-	std::cout << extensionCount << " extensions supported." << std::endl;
-
-	return 0;
 }	
