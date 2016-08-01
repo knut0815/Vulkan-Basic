@@ -93,7 +93,7 @@ private:
 		std::vector<VkPresentModeKHR> presentModes;
 	};
 
-	//! create an instance, which includes global extensions and validation layers
+	//! create an instance, which is the connection between the application and the Vulkan library
 	void createInstance()
 	{
 		if (mEnableValidationLayers && !checkValidationLayerSupport())
@@ -170,6 +170,7 @@ private:
 			throw std::runtime_error("Failed to create VkInstance.");
 		}
 
+		std::cout << "Successfully created intance object." << std::endl;
 	}
 
 	//! check if all of the requested validation layers are installed on this system
@@ -263,7 +264,7 @@ private:
 		return extensions;
 	}
 
-	//! creates a callback object
+	//! creates a debug callback object
 	void setupDebugCallback()
 	{	
 		/*
@@ -290,13 +291,15 @@ private:
 		createInfo.flags = VK_DEBUG_REPORT_ERROR_BIT_EXT | VK_DEBUG_REPORT_WARNING_BIT_EXT;
 		createInfo.pfnCallback = (PFN_vkDebugReportCallbackEXT)sDebugCallback;
 
-		if (CreateDebugReportCallbackEXT(mInstance, &createInfo, nullptr, &mCallback) != VK_SUCCESS) // calls CreateDebugReportCallbackEXT
+		if (CreateDebugReportCallbackEXT(mInstance, &createInfo, nullptr, &mCallback) != VK_SUCCESS) 
 		{
 			throw std::runtime_error("Failed to setup debug callback.");
 		}
+
+		std::cout << "Successfully created debug callback object." << std::endl;
 	}
 
-	//! explicitly loads a function from the Vulkan extension for creating a VkDebugReportCallbackEXT object
+	//! explicitly loads a function from a Vulkan extension for creating a VkDebugReportCallbackEXT object
 	static VkResult CreateDebugReportCallbackEXT(
 		VkInstance instance,
 		const VkDebugReportCallbackCreateInfoEXT* pCreateInfo,
@@ -314,7 +317,7 @@ private:
 		}
 	}
 
-	//! explicitly loads a function from the Vulkan extension for cleaning up a VkDebugReportCallbackEXT object
+	//! explicitly loads a function from a Vulkan extension for destroying a VkDebugReportCallbackEXT object
 	static void DestroyDebugReportCallbackEXT(
 		VkInstance instance,
 		VkDebugReportCallbackEXT callback,
@@ -362,7 +365,7 @@ private:
 		
 	}
 
-	//! choose a physical device (GPU) to use for rendering
+	//! choose a physical device, which represents a GPU
 	void pickPhysicalDevice()
 	{
 		/*
@@ -383,7 +386,7 @@ private:
 
 		if (deviceCount == 0)
 		{
-			throw std::runtime_error("Failed to find GPUs with Vulkan support.");
+			throw std::runtime_error("Failed to find a GPU with Vulkan support.");
 		}
 
 		std::vector<VkPhysicalDevice> devices(deviceCount);
@@ -402,9 +405,13 @@ private:
 		{
 			throw std::runtime_error("Failed to find a suitable GPU.");
 		}
+
+		VkPhysicalDeviceProperties deviceProperties;
+		vkGetPhysicalDeviceProperties(mPhysicalDevice, &deviceProperties);
+		std::cout << "Sucessfully selected physical device: " << deviceProperties.deviceName << std::endl;
 	}
 
-	//! check if all requested device extensions are supported
+	//! check if the specified physical device supports all of the requested extensions
 	bool checkDeviceExtensionSupport(VkPhysicalDevice device)
 	{
 		/*
@@ -491,7 +498,7 @@ private:
 		return indices.isComplete() && extensionsSupported && swapChainAdequate;
 	}
 
-	//! determines which queue families the specified physical device supports
+	//! determine which queue families the specified physical device supports
 	QueueFamilyIndices findQueueFamilies(VkPhysicalDevice device)
 	{
 		/*
@@ -516,6 +523,7 @@ private:
 
 		uint32_t queueFamilyCount = 0;
 		vkGetPhysicalDeviceQueueFamilyProperties(device, &queueFamilyCount, nullptr);
+		std::cout << "This physical device supports " << queueFamilyCount << " queue families." << std::endl;
 
 		std::vector<VkQueueFamilyProperties> queueFamilies(queueFamilyCount);
 		vkGetPhysicalDeviceQueueFamilyProperties(device, &queueFamilyCount, queueFamilies.data());
@@ -548,7 +556,7 @@ private:
 		return indices;
 	}
 
-	//! creates a logical device
+	//! creates a logical device, which serves as an interface between the application and a physical device
 	void createLogicalDevice()
 	{
 		/*
@@ -603,7 +611,7 @@ private:
 		createInfo.queueCreateInfoCount = (uint32_t)queueCreateInfos.size();
 		createInfo.pEnabledFeatures = &deviceFeatures;
 		
-		// enable the request extensions (we check that they exist on this system in checkDeviceExtensionSupport)
+		// enable the requested extensions (we check that they exist on this system in checkDeviceExtensionSupport)
 		createInfo.enabledExtensionCount = mDeviceExtensions.size();
 		createInfo.ppEnabledExtensionNames = mDeviceExtensions.data();
 		
@@ -742,7 +750,7 @@ private:
 		   the application when the queue is full, the images that are already queued are simply replaced
 		   with the newer ones (you can use this to implement triple buffering)
 
-		Only 2 is guaranteed to be available.
+		Only VK_PRESENT_MODE_FIFO_KHR is guaranteed to be available.
 		
 		*/
 
@@ -750,10 +758,12 @@ private:
 		{
 			if (availablePresentMode == VK_PRESENT_MODE_MAILBOX_KHR)
 			{
+				std::cout << "Found swap chain present mode: VK_PRESENT_MODE_MAILBOX_KHR." << std::endl;
 				return availablePresentMode;
 			}
 		}
 
+		std::cout << "Defaulting to swap chain present mode: VK_PRESENT_MODE_FIFO_KHR." << std::endl;
 		return VK_PRESENT_MODE_FIFO_KHR;
 	}
 
@@ -866,6 +876,8 @@ private:
 			throw std::runtime_error("Failed to create swap chain.");
 		}
 
+		std::cout << "Successfully created swap chain object with " << imageCount << " images." << std::endl;
+
 		// retrieve the images from the swap chain and store them as a member variable
 		vkGetSwapchainImagesKHR(mDevice, mSwapChain, &imageCount, nullptr);
 		mSwapChainImages.resize(imageCount);
@@ -923,10 +935,10 @@ private:
 			}
 		}
 
-		std::cout << "All image views successfully created." << std::endl;
+		std::cout << "Successfully created " << mSwapChainImageViews.size() << " image views." << std::endl;
 	}
 
-	//! sets up a rendering pipeline
+	//! sets up a rendering pipeline by creating shader modules and specifying viewport, scissor, blend, rasterizer, and multisampling settings
 	void createGraphicsPipeline()
 	{
 		/*
@@ -1109,7 +1121,6 @@ private:
 		pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
 		pipelineInfo.stageCount = 2;
 		pipelineInfo.pStages = shaderStages;
-
 		pipelineInfo.pVertexInputState = &vertexInputInfo;
 		pipelineInfo.pInputAssemblyState = &inputAssembly;
 		pipelineInfo.pViewportState = &viewportState;
@@ -1121,7 +1132,7 @@ private:
 
 		pipelineInfo.layout = mPipelineLayout; // handle (rather than struct pointer)
 
-		pipelineInfo.renderPass = mRenderPass;
+		pipelineInfo.renderPass = mRenderPass; // handle to render pass (created prior to this function call)
 		pipelineInfo.subpass = 0;
 
 		// Vulkan allows you to create a new graphics pipeline by deriving it from an existing pipeline: null for now
@@ -1198,7 +1209,7 @@ private:
 
 		// describe the subpass
 		VkSubpassDescription subPass = {};
-		subPass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+		subPass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS; // Vulkan may support compute subpasses in the future...
 		subPass.colorAttachmentCount = 1;
 		subPass.pColorAttachments = &colorAttachmentRef;
 
@@ -1224,7 +1235,7 @@ private:
 		if (vkCreateRenderPass(mDevice, &renderPassInfo, nullptr, &mRenderPass) != VK_SUCCESS) {
 			throw std::runtime_error("Failed to create render pass.");
 		}
-
+		
 		std::cout << "Successfully created the render pass object." << std::endl;
 	}
 
@@ -1318,7 +1329,7 @@ private:
 		std::cout << "Successfully created all framebuffer objects." << std::endl;
 	}
 
-	//! create a command pool, which manages command buffers
+	//! create a command pool, which manages and allocates command buffers
 	void createCommandPool()
 	{
 		/*
