@@ -9,17 +9,76 @@
 // glm headers
 #define GLM_FORCE_RADIANS
 #define GLM_FORCE_DEPTH_ZERO_TO_ONE
-#include "glm/vec4.hpp"
-#include "glm/mat4x4.hpp"
+#include "glm/glm.hpp"
 
 // other
 #include <iostream>
 #include <stdexcept>
 #include <vector>
 #include <set>
+#include <array>
 #include <algorithm>
 #include <fstream>
 #include <sstream>
+
+//! a struct for managing vertex data
+struct Vertex
+{
+	glm::vec2 position;
+	glm::vec3 color;
+
+	//! a static function for returning the binding description of the specified vertex data
+	static VkVertexInputBindingDescription getBindingDescription()
+	{
+		/*
+		
+		A VkVertexInputBindingDescription struct describes the rate at which the shader should load
+		data from memory. It specifies the number of bytes between data entries and whether to move
+		to the next data entry after each vertex or after each instance.
+		
+		*/
+
+		VkVertexInputBindingDescription bindingDescription = {};
+		bindingDescription.binding = 0;
+		bindingDescription.stride = sizeof(Vertex);
+		bindingDescription.inputRate = VK_VERTEX_INPUT_RATE_VERTEX; // move to the next data entry after each vertex
+		return bindingDescription;
+	}
+
+	//! a static function for returning the attribute descriptions of the specified vertex data
+	static std::array<VkVertexInputAttributeDescription, 2> getAttributeDescriptions()
+	{
+		/*
+		
+		Each VkVertexInputAttributeDescription struct describes how to extract a vertex attribute
+		from a chunk of vertex data originating from a binding description. We need one for each
+		attribute in our shader.
+		
+		*/
+
+		std::array<VkVertexInputAttributeDescription, 2> attributeDescriptions = {};
+
+		// position
+		attributeDescriptions[0].binding = 0;						// the binding that the per-vertex data comes from
+		attributeDescriptions[0].location = 0;						// the location directive in the vertex shader
+		attributeDescriptions[0].format = VK_FORMAT_R32G32_SFLOAT;	// two floats 
+		attributeDescriptions[0].offset = offsetof(Vertex, position);
+
+		// color
+		attributeDescriptions[1].binding = 0;
+		attributeDescriptions[1].location = 1;
+		attributeDescriptions[1].format = VK_FORMAT_R32G32B32_SFLOAT;
+		attributeDescriptions[1].offset = offsetof(Vertex, color);
+
+		return attributeDescriptions;
+	}
+};
+
+const std::vector<Vertex> vertices = {
+	{{ 0.0f, -0.5f },  { 1.0f, 1.0f, 1.0f }},
+	{{ 0.5f, 0.5f },   { 0.0f, 1.0f, 0.0f }},
+	{{ -0.5f, 0.5f },  { 0.0f, 0.0f, 1.0f }}
+};
 
 class BasicApp
 {
@@ -46,6 +105,24 @@ private:
 		glfwInit();
 		glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
 		mWindow = glfwCreateWindow(mWidth, mHeight, "Vulkan App", nullptr, nullptr);
+		
+		glfwSetWindowUserPointer(mWindow, this);
+		glfwSetWindowSizeCallback(mWindow, BasicApp::resize);
+	}
+
+	static void resize(GLFWwindow* window, int width, int height)
+	{
+		/*
+		
+		GLFW's callback functions cannot be member functions. Luckily, we can store an arbitrary pointer
+		in the window object with glfwSetWindowUserPointer, so we can specify a static class member and 
+		get the original class instance back via the same function. 
+		
+		*/
+
+		if (width == 0 || height == 0) return;
+		BasicApp* app = reinterpret_cast<BasicApp*>(glfwGetWindowUserPointer(window));
+		app->recreateSwapChain();
 	}
 
 	void initVulkan()
@@ -61,6 +138,7 @@ private:
 		createGraphicsPipeline();
 		createFramebuffers();
 		createCommandPool();
+		createVertexBuffer();
 		createCommandBuffers();
 		createSemaphores();
 	}
@@ -823,6 +901,8 @@ private:
 		most hardware, then we should stick to exclusive mode because concurrent mode requires you to specify
 		at least two distinct queue families.
 
+		This function also properly handles recreating a swap chain when the window is resized.
+
 		*/
 
 		SwapChainSupportDetails swapChainSupport = querySwapChainSupport(mPhysicalDevice);
@@ -845,8 +925,8 @@ private:
 		createInfo.imageFormat = surfaceFormat.format;
 		createInfo.imageColorSpace = surfaceFormat.colorSpace;
 		createInfo.imageExtent = extent;
-		createInfo.imageArrayLayers = 1; // always 1 unless you're developing a stereoscopic application
-		createInfo.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT; // what kind of operations we'll use the images for (in this case, direct rendering)
+		createInfo.imageArrayLayers = 1;								// always 1 unless you're developing a stereoscopic application
+		createInfo.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;	// what kind of operations we'll use the images for (in this case, direct rendering)
 
 		QueueFamilyIndices indices = findQueueFamilies(mPhysicalDevice);
 		uint32_t queueFamilyIndices[] = { (uint32_t)indices.graphicsFamily, (uint32_t)indices.presentFamily };
@@ -861,20 +941,26 @@ private:
 		{
 			std::cout << "Settings swap chain share mode to: VK_SHARING_MODE_EXCLUSIVE." << std::endl;
 			createInfo.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
-			createInfo.queueFamilyIndexCount = 0; // optional
-			createInfo.pQueueFamilyIndices = nullptr; // optional
+			createInfo.queueFamilyIndexCount = 0;		// optional
+			createInfo.pQueueFamilyIndices = nullptr;	// optional
 		}
 
-		createInfo.preTransform = swapChainSupport.capabilities.currentTransform; // 90 degree clockwise rotation, etc.
-		createInfo.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR; // specifies if the alpha channel should be used for blending with other windows in the system
-		createInfo.presentMode = presentMode;
-		createInfo.clipped = VK_TRUE; // we don't care about the color of pixels that are obscured (behind another window)
-		createInfo.oldSwapchain = VK_NULL_HANDLE; // complex, don't worry about it (for multiple swap chains)
+		// pass the previous swap chain object to the VkSwapchainCreateInfoKHR struct to indicate that we intend to replace it
+		VkSwapchainKHR oldSwapChain = mSwapChain;
 
-		if (vkCreateSwapchainKHR(mDevice, &createInfo, nullptr, &mSwapChain) != VK_SUCCESS)
+		createInfo.preTransform = swapChainSupport.capabilities.currentTransform;	// 90 degree clockwise rotation, etc.
+		createInfo.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;				// specifies if the alpha channel should be used for blending with other windows in the system
+		createInfo.presentMode = presentMode;
+		createInfo.clipped = VK_TRUE;												// we don't care about the color of pixels that are obscured (behind another window)
+		createInfo.oldSwapchain = oldSwapChain; 
+
+		// create the new swap chain
+		VkSwapchainKHR newSwapChain;
+		if (vkCreateSwapchainKHR(mDevice, &createInfo, nullptr, &newSwapChain) != VK_SUCCESS)
 		{
 			throw std::runtime_error("Failed to create swap chain.");
 		}
+		*&mSwapChain = newSwapChain;
 
 		std::cout << "Successfully created swap chain object with " << imageCount << " images." << std::endl;
 
@@ -1007,10 +1093,14 @@ private:
 		VkPipelineShaderStageCreateInfo shaderStages[] = { vertShaderStageInfo, fragShaderStageInfo };
 
 		// describe the vertex data
+		auto bindingDescription = Vertex::getBindingDescription();
+		auto attributeDescriptions = Vertex::getAttributeDescriptions();
 		VkPipelineVertexInputStateCreateInfo vertexInputInfo = {};
 		vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
-		vertexInputInfo.vertexBindingDescriptionCount = 0;
-		vertexInputInfo.vertexAttributeDescriptionCount = 0;
+		vertexInputInfo.vertexBindingDescriptionCount = 1;
+		vertexInputInfo.vertexAttributeDescriptionCount = attributeDescriptions.size();
+		vertexInputInfo.pVertexBindingDescriptions = &bindingDescription;
+		vertexInputInfo.pVertexAttributeDescriptions = attributeDescriptions.data();
 
 		// describe what type of geometry will be drawn
 		VkPipelineInputAssemblyStateCreateInfo inputAssembly = {};
@@ -1215,10 +1305,10 @@ private:
 
 		// describe subpass dependencies
 		VkSubpassDependency dependency = {};
-		dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
-		dependency.dstSubpass = 0;
+		dependency.srcSubpass = VK_SUBPASS_EXTERNAL; // the implicit subpass before or after the render pass depending on whether it is specified in srcSubpass or dstSubpass
+		dependency.dstSubpass = 0; // our subpass, which is the first and only one
 		dependency.srcStageMask = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
-		dependency.srcAccessMask = VK_ACCESS_MEMORY_READ_BIT;
+		dependency.srcAccessMask = VK_ACCESS_MEMORY_READ_BIT; // we need to wait for the swap chain to finish reading from the image before we can access it
 		dependency.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
 		dependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
 
@@ -1371,6 +1461,97 @@ private:
 		std::cout << "Successfully created command pool object." << std::endl;
 	}
 
+	//! create a GPU-side buffer to hold the specified vertex data
+	void createVertexBuffer()
+	{
+		/*
+		
+		Just like the images in the swap chain, buffers can also be owned by a specific queue family or
+		be shared between multiple at the same time. We will only be using this buffer from the graphics
+		queue, so we can stick to exclusive access.
+
+		The flags parameter is used to configure sparse buffer memory, which is not relevant right now.
+		
+		The VkMemoryRequirements struct that is returned by vkGetBufferMemoryRequirements has three fields:
+
+		1. size: the size of the required amount of memory, in bytes, which may differ from bufferInfo.size
+		2. alignment: the offset, in bytes, where the buffer begins in the allocated region of memory (depends
+		   on bufferInfo.usage and bufferInfo.flags)
+		3. memoryTypeBits: bit field of the memory types that are suitable for the buffer
+
+		*/
+
+		VkBufferCreateInfo bufferInfo = {};
+		bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+		bufferInfo.size = sizeof(vertices[0]) * vertices.size();
+		bufferInfo.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+		bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE; 
+		
+		if (vkCreateBuffer(mDevice, &bufferInfo, nullptr, &mVertexBuffer) != VK_SUCCESS)
+		{
+			throw std::runtime_error("Failed to create vertex buffer object.");
+		}
+
+		// query memory requirements
+		VkMemoryRequirements memRequirements;
+		vkGetBufferMemoryRequirements(mDevice, mVertexBuffer, &memRequirements);
+
+		VkMemoryAllocateInfo allocInfo = {};
+		allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+		allocInfo.allocationSize = memRequirements.size;
+		allocInfo.memoryTypeIndex = findMemoryType(memRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+		
+		if (vkAllocateMemory(mDevice, &allocInfo, nullptr, &mVertexBufferMemory) != VK_SUCCESS)
+		{
+			throw std::runtime_error("Failed to allocate vertex buffer memory.");
+		}
+
+		std::cout << "Successfully allocated " << memRequirements.size << " bytes of buffer memory." << std::endl;
+
+		// associate this memory with the buffer
+		vkBindBufferMemory(mDevice, mVertexBuffer, mVertexBufferMemory, 0); // if the offset is non-zero, then it is required to be divisible by memRequirements.alignment
+	
+		// copy CPU-side vertex data into the buffer
+		void* data;
+		vkMapMemory(mDevice, mVertexBufferMemory, 0, bufferInfo.size, 0, &data);
+		memcpy(data, vertices.data(), (size_t)bufferInfo.size);
+		vkUnmapMemory(mDevice, mVertexBufferMemory);
+	}
+	
+	//! called from createVertexBuffer to find the appropriate memory type to use 
+	uint32_t findMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties)
+	{
+		/*
+		
+		Graphics cards can offer different types of memory to allocate from. Each type of memory varies in 
+		terms of the operations it allows and performance. We need to combine the requirements of the vertex buffer
+		and our own application to find the right type of memory to use.
+
+		The VkPhysicalDeviceMemoryProperties struct has two arrays, memoryTypes and memoryHeaps. Memory heaps 
+		are distinct memory resources like dedicated VRAM and swap space in RAM for when VRAM runs out. The
+		different types of memory exist within these heaps. Right now, we'll only concern ourselves with the
+		type of memory and not the heap it comes from.
+
+		*/
+
+		VkPhysicalDeviceMemoryProperties memProperties;
+		vkGetPhysicalDeviceMemoryProperties(mPhysicalDevice, &memProperties);
+		
+		for (uint32_t i = 0; i < memProperties.memoryTypeCount; ++i)
+		{
+			// see if the type we are looking for is "on" (i.e. that bit is set to 1)
+			// we also need to be able to write our vertex data to this memory - the memoryTypes array consists of
+			//     VkMemoryHeap structs that specify the heap and properties of each type of memory (the properties
+			//	   define special features of the memory, like being able to map it from the CPU for writing)
+			if (typeFilter & (1 << i) && (memProperties.memoryTypes[i].propertyFlags & properties) == properties) 
+			{
+				return i;
+			}
+		}
+
+		throw std::runtime_error("Failed to find a suitable memory type.");
+	}
+
 	//! create command buffers, which record drawing or compute commands
 	void createCommandBuffers()
 	{
@@ -1409,6 +1590,13 @@ private:
 
 		*/
 
+		// free any previous command buffers (this will happen via a call to recreateSwapChain)
+		if (mCommandBuffers.size() > 0)
+		{
+			vkFreeCommandBuffers(mDevice, mCommandPool, mCommandBuffers.size(), mCommandBuffers.data());
+			std::cout << "Freeing command buffers." << std::endl;
+		}
+
 		mCommandBuffers.resize(mSwapChainFramebuffers.size());
 
 		VkCommandBufferAllocateInfo allocInfo = {};
@@ -1436,10 +1624,10 @@ private:
 			renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
 			renderPassInfo.renderPass = mRenderPass;
 			renderPassInfo.framebuffer = mSwapChainFramebuffers[i];
-			renderPassInfo.renderArea.offset = { 0, 0 }; // the size of the render area
+			renderPassInfo.renderArea.offset = { 0, 0 };			// the size of the render area
 			renderPassInfo.renderArea.extent = mSwapChainExtent;
 
-			VkClearValue clearColor = { 0.0f, 0.0f, 0.0f, 1.0f }; // the clear values to use for VK_ATTACHMENT_LOAD_OP_CLEAR
+			VkClearValue clearColor = { 0.0f, 0.0f, 0.0f, 1.0f };	// the clear values to use for VK_ATTACHMENT_LOAD_OP_CLEAR
 			renderPassInfo.clearValueCount = 1;
 			renderPassInfo.pClearValues = &clearColor;
 
@@ -1448,6 +1636,11 @@ private:
 
 			// bind the graphics pipeline: notice the second parameter which tells Vulkan that this is a graphics (not compute) pipeline
 			vkCmdBindPipeline(mCommandBuffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS, mGraphicsPipeline);
+
+			// bind the vertex buffer
+			VkBuffer vertexBuffers[] = { mVertexBuffer };
+			VkDeviceSize offsets[] = { 0 };
+			vkCmdBindVertexBuffers(mCommandBuffers[i], 0, 1, vertexBuffers, offsets);
 
 			// actual draw command:
 			// vertex count
@@ -1529,7 +1722,7 @@ private:
 		we should submit the command buffer that binds the swap chain image we just acquired as color attachment.
 
 		The signalSemaphoreCount and pSignalSemaphores parameters specify which semaphores to signal once the 
-		command buffer(s) have finished execution. In our case we're using the renderFinishedSemaphore for that purpose.
+		command buffer(s) have finished execution. In our case we're using the mRenderFinishedSemaphore for that purpose.
 
 		We can now submit the command buffer to the graphics queue using vkQueueSubmit. The function takes an array of 
 		VkSubmitInfo structures as argument for efficiency when the workload is much larger. The last parameter references 
@@ -1541,12 +1734,23 @@ private:
 
 		*/
 		
+		// retrieve an image from the swap chain: it is possible for Vulkan to tell us that the swap chain is no longer compatible during presentation
 		uint32_t imageIndex;
-		vkAcquireNextImageKHR(mDevice, mSwapChain, std::numeric_limits<uint64_t>::max(), mImageAvailableSemaphore, VK_NULL_HANDLE, &imageIndex);
-		
+		VkResult result = vkAcquireNextImageKHR(mDevice, mSwapChain, std::numeric_limits<uint64_t>::max(), mImageAvailableSemaphore, VK_NULL_HANDLE, &imageIndex);
+		if (result == VK_ERROR_OUT_OF_DATE_KHR)
+		{
+			recreateSwapChain();
+			return;
+		}
+		else if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR) // continue if we receive VK_SUBOPTIMAL_KHR...
+		{
+			throw std::runtime_error("Failed to acquire swap chain image.");
+		}
+
 		VkSubmitInfo submitInfo = {};
 		submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
 
+		// prepare the queue for submission
 		VkSemaphore waitSemaphores[] = { mImageAvailableSemaphore };
 		VkPipelineStageFlags waitStages[] = { VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT };
 		submitInfo.waitSemaphoreCount = 1;
@@ -1564,6 +1768,7 @@ private:
 			throw std::runtime_error("Failed to submit draw command buffer.");
 		}
 
+		// configure presentation 
 		VkPresentInfoKHR presentInfo = {};
 		presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
 		presentInfo.waitSemaphoreCount = 1;
@@ -1575,7 +1780,43 @@ private:
 		presentInfo.pImageIndices = &imageIndex;
 		presentInfo.pResults = nullptr; // optional
 
-		vkQueuePresentKHR(mPresentQueue, &presentInfo);
+		// similar to vkAcquireNextImageKHR, we check the result of presenting the newly rendered image and take action if necessary
+		result = vkQueuePresentKHR(mPresentQueue, &presentInfo);
+		if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR)
+		{
+			recreateSwapChain();
+		}
+		else if (result != VK_SUCCESS)
+		{
+			throw std::runtime_error("Failed to present swap chain image.");
+		}
+	}
+
+	//! rebuilds the entire swap chain 
+	void recreateSwapChain()
+	{
+		/*
+		
+		If the window size changes, our swap chain will no longer be compatible with the window surface. We
+		first call vkDeviceWaitIdle to ensure that we don't touch any resources that may still be in use.
+
+		Obviously, the first thing we'll have to do is recreate the swap chain itself. The image views need 
+		to be recreated because they are based directly on the swap chain images. The render pass needs to be 
+		recreated because it depends on the format of the swap chain images. Viewport and scissor rectangle 
+		size is specified during graphics pipeline creation, so the pipeline also needs to be rebuilt. It is
+		possible to avoid this by using dynamic state for the viewports and scissor rectangles. Finally, the 
+		framebuffers and command buffers also directly depend on the swap chain images.
+
+		*/
+
+		vkDeviceWaitIdle(mDevice);
+
+		createSwapChain();
+		createImageViews();
+		createRenderPass();
+		createGraphicsPipeline();
+		createFramebuffers();
+		createCommandBuffers();
 	}
 
 	/* General */
@@ -1604,8 +1845,10 @@ private:
 	vk::Deleter<VkRenderPass> mRenderPass{ mDevice, vkDestroyRenderPass };
 	vk::Deleter<VkPipelineLayout> mPipelineLayout{ mDevice, vkDestroyPipelineLayout };	// for describing uniform layouts: should be destroyed before the render pass above
 	vk::Deleter<VkPipeline> mGraphicsPipeline{ mDevice, vkDestroyPipeline };
+	vk::Deleter<VkBuffer> mVertexBuffer{ mDevice, vkDestroyBuffer };
+	vk::Deleter<VkDeviceMemory> mVertexBufferMemory{ mDevice, vkFreeMemory };
 	std::vector<vk::Deleter<VkFramebuffer>> mSwapChainFramebuffers;
-
+	
 	/* Command pool related */
 	vk::Deleter<VkCommandPool> mCommandPool{ mDevice, vkDestroyCommandPool };
 	std::vector<VkCommandBuffer> mCommandBuffers;										// automatically freed when the VkCommandPool is destroyed
