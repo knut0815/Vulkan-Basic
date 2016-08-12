@@ -10,8 +10,13 @@
 #define GLM_FORCE_RADIANS
 #define GLM_FORCE_DEPTH_ZERO_TO_ONE
 #include "glm/glm.hpp"
+#include "glm/gtc/matrix_transform.hpp"
 
-// other
+// stb headers
+#define STB_IMAGE_IMPLEMENTATION
+#include "stb_image.h"
+
+// systen
 #include <iostream>
 #include <stdexcept>
 #include <vector>
@@ -20,6 +25,7 @@
 #include <algorithm>
 #include <fstream>
 #include <sstream>
+#include <chrono>
 
 //! a struct for managing vertex data
 struct Vertex
@@ -74,10 +80,22 @@ struct Vertex
 	}
 };
 
+struct UniformBufferObject
+{
+	glm::mat4 model;
+	glm::mat4 view;
+	glm::mat4 projection;
+};
+
 const std::vector<Vertex> vertices = {
-	{{ 0.0f, -0.5f },  { 1.0f, 1.0f, 1.0f }},
-	{{ 0.5f, 0.5f },   { 0.0f, 1.0f, 0.0f }},
-	{{ -0.5f, 0.5f },  { 0.0f, 0.0f, 1.0f }}
+	{ { -0.5f, -0.5f },	{ 1.0f, 0.0f, 0.0f } },
+	{ { 0.5f, -0.5f },	{ 0.0f, 1.0f, 0.0f } },
+	{ { 0.5f, 0.5f },	{ 0.0f, 0.0f, 1.0f } },
+	{ { -0.5f, 0.5f },	{ 1.0f, 1.0f, 1.0f } }
+};
+
+const std::vector<uint16_t> indices = {
+	0, 1, 2, 2, 3, 0
 };
 
 class BasicApp
@@ -135,10 +153,16 @@ private:
 		createSwapChain();
 		createImageViews();
 		createRenderPass();
+		createDescriptorSetLayout();
 		createGraphicsPipeline();
 		createFramebuffers();
 		createCommandPool();
+		createTextureImage();
 		createVertexBuffer();
+		createIndexBuffer();
+		createUniformBuffer();
+		createDescriptorPool();
+		createDescriptorSet();
 		createCommandBuffers();
 		createSemaphores();
 	}
@@ -148,11 +172,33 @@ private:
 		while (!glfwWindowShouldClose(mWindow))
 		{
 			glfwPollEvents();
+
+			updateUniformBuffer();
 			drawFrame();
 		}
 
 		// all operations in drawFrame are asynchronous, so we need to wait for the logical device to finish operations before cleaning up resources 
 		vkDeviceWaitIdle(mDevice);
+	}
+
+	void updateUniformBuffer()
+	{
+		static auto startTime = std::chrono::high_resolution_clock::now();
+		auto currentTime = std::chrono::high_resolution_clock::now();
+		float time = std::chrono::duration_cast<std::chrono::milliseconds>(currentTime - startTime).count() / 1000.0f;
+
+		UniformBufferObject ubo = {};
+		ubo.model = glm::rotate(glm::mat4(), time * glm::radians(90.0f), glm::vec3(0.0f, 0.0f, 1.0f));
+		ubo.view = glm::lookAt(glm::vec3(2.0f, 2.0f, 2.0f), glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3(0.0f, 1.0f, 0.0f));
+		ubo.projection = glm::perspective(glm::radians(45.0f), mSwapChainExtent.width / static_cast<float>(mSwapChainExtent.height), 0.1f, 10.0f);
+		ubo.projection[1][1] *= -1;
+
+		void* data;
+		vkMapMemory(mDevice, mUniformStagingBufferMemory, 0, sizeof(ubo), 0, &data);
+		memcpy(data, &ubo, sizeof(ubo));
+		vkUnmapMemory(mDevice, mUniformStagingBufferMemory);
+
+		copyBuffer(mUniformStagingBuffer, mUniformBuffer, sizeof(ubo));
 	}
 
 	//! a struct for determining which queue families a physical device supports
@@ -1024,6 +1070,107 @@ private:
 		std::cout << "Successfully created " << mSwapChainImageViews.size() << " image views." << std::endl;
 	}
 
+	//! create a descriptor set layout to describe the types of resources that are going to be accessed by the graphics pipeline
+	void createDescriptorSetLayout()
+	{
+		VkDescriptorSetLayoutBinding uboLayoutBinding = {};
+		uboLayoutBinding.binding = 0;
+		uboLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+		uboLayoutBinding.descriptorCount = 1;
+		uboLayoutBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT; // the shader stage(s) that will reference this descriptor (could use VK_SHADER_STAGE_ALL_GRAPHICS)
+		uboLayoutBinding.pImmutableSamplers = nullptr; // optional
+
+		VkDescriptorSetLayoutCreateInfo layoutInfo = {};
+		layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+		layoutInfo.bindingCount = 1;
+		layoutInfo.pBindings = &uboLayoutBinding;
+
+		if (vkCreateDescriptorSetLayout(mDevice, &layoutInfo, nullptr, &mDescriptorSetLayout) != VK_SUCCESS)
+		{
+			throw std::runtime_error("Failed to create descriptor set layout object.");
+		}
+	}
+
+	//! create a descriptor pool, from which we can allocate descriptor sets
+	void createDescriptorPool()
+	{
+		/*
+
+		Descriptor sets can't be created directly, they must be allocated from a pool like command
+		buffers. A descriptor set specifies a VkBuffer resource to bind to the uniform buffer
+		descriptor.
+
+		*/
+
+		VkDescriptorPoolSize poolSize = {};
+		poolSize.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+		poolSize.descriptorCount = 1;
+
+		VkDescriptorPoolCreateInfo poolInfo = {};
+		poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+		poolInfo.poolSizeCount = 1;
+		poolInfo.pPoolSizes = &poolSize;
+		poolInfo.maxSets = 1;
+
+		if (vkCreateDescriptorPool(mDevice, &poolInfo, nullptr, &mDescriptorPool) != VK_SUCCESS)
+		{
+			throw std::runtime_error("Failed to create descriptor pool.");
+		}
+
+		std::cout << "Successfully created descriptor pool object." << std::endl;
+	}
+
+	//! create a descriptor set 
+	void createDescriptorSet()
+	{
+		/*
+		
+		Shaders access buffer and image resources by using special shader variables which are indirectly
+		bound to buffer and image views via the API. These variables are organized into sets, where each
+		set of bindings is represented by a descriptor set object in the API and a descriptor set is 
+		bound all at once. 
+
+		A descriptor is an opaque data structure representing a shader resource such as a buffer view,
+		image view, sampler, or combined image sampler. The content of each is determined by its descriptor
+		set layout and the sequence of set layouts that can be used by resource variables in shaders
+		within a pipeline is specified in a pipeline layout.
+
+		*/
+
+		VkDescriptorSetLayout layouts[] = { mDescriptorSetLayout };
+		VkDescriptorSetAllocateInfo allocInfo = {};
+		allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+		allocInfo.descriptorPool = mDescriptorPool;
+		allocInfo.descriptorSetCount = 1;
+		allocInfo.pSetLayouts = layouts;
+
+		if (vkAllocateDescriptorSets(mDevice, &allocInfo, &mDescriptorSet) != VK_SUCCESS)
+		{
+			throw std::runtime_error("Failed to allocated descriptor set.");
+		}
+
+		std::cout << "Successfully allocated descriptor set." << std::endl;
+
+		// configure the descriptors within this descriptor set
+		VkDescriptorBufferInfo bufferInfo = {};
+		bufferInfo.buffer = mUniformBuffer;
+		bufferInfo.offset = 0;
+		bufferInfo.range = sizeof(UniformBufferObject);
+
+		VkWriteDescriptorSet descriptorWrite = {};
+		descriptorWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+		descriptorWrite.dstSet = mDescriptorSet;
+		descriptorWrite.dstBinding = 0;
+		descriptorWrite.dstArrayElement = 0;
+		descriptorWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+		descriptorWrite.descriptorCount = 1;
+		descriptorWrite.pBufferInfo = &bufferInfo;
+		descriptorWrite.pImageInfo = nullptr; // optional
+		descriptorWrite.pTexelBufferView = nullptr; // optional
+
+		vkUpdateDescriptorSets(mDevice, 1, &descriptorWrite, 0, nullptr);
+	}
+
 	//! sets up a rendering pipeline by creating shader modules and specifying viewport, scissor, blend, rasterizer, and multisampling settings
 	void createGraphicsPipeline()
 	{
@@ -1138,7 +1285,7 @@ private:
 		rasterizer.polygonMode = VK_POLYGON_MODE_FILL; // how fragments are generated for geometry
 		rasterizer.lineWidth = 1.0f; // the thickness of lines in terms of number of fragments
 		rasterizer.cullMode = VK_CULL_MODE_BACK_BIT; // the type of face culling to use
-		rasterizer.frontFace = VK_FRONT_FACE_CLOCKWISE; // the vertex order for faces to be considered front-facing
+		rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE; // the vertex order for faces to be considered front-facing
 		rasterizer.depthBiasClamp;
 		rasterizer.depthBiasConstantFactor = 0.0f; // optional
 		rasterizer.depthBiasClamp = 0.0f; // optional
@@ -1193,11 +1340,12 @@ private:
 		colorBlending.blendConstants[2] = 0.0f; // optional
 		colorBlending.blendConstants[3] = 0.0f; // optional
 
-		// setup pipeline layout: push constants are another way of passing dynamic values to shaders
+		// setup pipeline layout, which controls access to descriptor sets and push constants
+		VkDescriptorSetLayout setLayouts[] = { mDescriptorSetLayout };
 		VkPipelineLayoutCreateInfo pipelineLayoutInfo = {};
 		pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-		pipelineLayoutInfo.setLayoutCount = 0;
-		pipelineLayoutInfo.pSetLayouts = nullptr;
+		pipelineLayoutInfo.setLayoutCount = 1;
+		pipelineLayoutInfo.pSetLayouts = setLayouts;
 		pipelineLayoutInfo.pushConstantRangeCount = 0;
 		pipelineLayoutInfo.pPushConstantRanges = 0;
 
@@ -1461,63 +1609,256 @@ private:
 		std::cout << "Successfully created command pool object." << std::endl;
 	}
 
-	//! create a GPU-side buffer to hold the specified vertex data
-	void createVertexBuffer()
+	void createTextureImage()
 	{
-		/*
+		int texWidth, texHeight, texChannels;
+		stbi_uc* pixels = stbi_load("textures/texture.png", &texWidth, &texHeight, &texChannels, STBI_rgb_alpha);
+		std::cout << "Loaded STB image file, resolution: " << texWidth << " x " << texHeight << std::endl;
+
+		VkDeviceSize imageSize = texWidth * texHeight * 4;
 		
-		Just like the images in the swap chain, buffers can also be owned by a specific queue family or
-		be shared between multiple at the same time. We will only be using this buffer from the graphics
-		queue, so we can stick to exclusive access.
-
-		The flags parameter is used to configure sparse buffer memory, which is not relevant right now.
-		
-		The VkMemoryRequirements struct that is returned by vkGetBufferMemoryRequirements has three fields:
-
-		1. size: the size of the required amount of memory, in bytes, which may differ from bufferInfo.size
-		2. alignment: the offset, in bytes, where the buffer begins in the allocated region of memory (depends
-		   on bufferInfo.usage and bufferInfo.flags)
-		3. memoryTypeBits: bit field of the memory types that are suitable for the buffer
-
-		*/
-
-		VkBufferCreateInfo bufferInfo = {};
-		bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-		bufferInfo.size = sizeof(vertices[0]) * vertices.size();
-		bufferInfo.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
-		bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE; 
-		
-		if (vkCreateBuffer(mDevice, &bufferInfo, nullptr, &mVertexBuffer) != VK_SUCCESS)
+		if (!pixels)
 		{
-			throw std::runtime_error("Failed to create vertex buffer object.");
+			throw std::runtime_error("Failed to load STB image file.");
 		}
 
-		// query memory requirements
+		vk::Deleter<VkImage> stagingImage{ mDevice, vkDestroyImage };
+		vk::Deleter<VkDeviceMemory> stagingImageMemory{ mDevice, vkFreeMemory };
+
+		VkImageCreateInfo imageInfo = {};
+		imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+		imageInfo.imageType = VK_IMAGE_TYPE_2D;
+		imageInfo.extent.width = texWidth;
+		imageInfo.extent.height = texHeight;
+		imageInfo.extent.depth = 1;
+		imageInfo.mipLevels = 1;
+		imageInfo.arrayLayers = 1;
+		imageInfo.format = VK_FORMAT_R8G8B8A8_UNORM;				// format that the loaded pixels will be converted to
+		imageInfo.tiling = VK_IMAGE_TILING_LINEAR;					// either VK_IMAGE_TILING_LINEAR (row-major order) or VK_IMAGE_TILING_OPTIMAL (implementation defined)
+		imageInfo.initialLayout = VK_IMAGE_LAYOUT_PREINITIALIZED;	// not usable by the GPU, but the first transition will preserve the texels
+		imageInfo.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT;			// set up as transfer source (since this is the staging image)
+		imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;			// only used by one queue family: the one that supports transfer operations
+		imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;					// related to multisampling (only relevant for images that will be used as attachments)
+		imageInfo.flags = 0;										// optional
+
+		if (vkCreateImage(mDevice, &imageInfo, nullptr, &stagingImage) != VK_SUCCESS)
+		{
+			throw std::runtime_error("Failed to create image.");
+		}
+
 		VkMemoryRequirements memRequirements;
-		vkGetBufferMemoryRequirements(mDevice, mVertexBuffer, &memRequirements);
+		vkGetImageMemoryRequirements(mDevice, stagingImage, &memRequirements);
 
 		VkMemoryAllocateInfo allocInfo = {};
 		allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
 		allocInfo.allocationSize = memRequirements.size;
 		allocInfo.memoryTypeIndex = findMemoryType(memRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 		
-		if (vkAllocateMemory(mDevice, &allocInfo, nullptr, &mVertexBufferMemory) != VK_SUCCESS)
+		if (vkAllocateMemory(mDevice, &allocInfo, nullptr, &stagingImageMemory) != VK_SUCCESS)
 		{
-			throw std::runtime_error("Failed to allocate vertex buffer memory.");
+			throw std::runtime_error("Failed to allocation image memory.");
+		}
+
+		vkBindImageMemory(mDevice, stagingImage, stagingImageMemory, 0);
+
+		// transfer pixel data from CPU to GPU (host visible) memory
+		void* data;
+		vkMapMemory(mDevice, stagingImageMemory, 0, imageSize, 0, &data);
+		memcpy(data, pixels, (size_t)imageSize);
+		vkUnmapMemory(mDevice, stagingImageMemory);
+
+		std::cout << "Successfully loaded STB image data into host visible (staging) memory." << std::endl;
+
+		// free the CPU-side memory
+		stbi_image_free(pixels);
+	}
+
+	//! helper function for abstracting buffer creation
+	void createBuffer(VkDeviceSize size, 
+		VkBufferUsageFlags usage, 
+		VkMemoryPropertyFlags properties,
+		vk::Deleter<VkBuffer>& buffer, 
+		vk::Deleter<VkDeviceMemory>& bufferMemory)
+	{
+		/*
+
+		Just like the images in the swap chain, buffers can also be owned by a specific queue family or
+		be shared between multiple at the same time. We will only be using this buffer from the graphics
+		queue, so we can stick to exclusive access.
+
+		The flags parameter is used to configure sparse buffer memory, which is not relevant right now.
+
+		The VkMemoryRequirements struct that is returned by vkGetBufferMemoryRequirements has three fields:
+
+		1. size: the size of the required amount of memory, in bytes, which may differ from bufferInfo.size
+		2. alignment: the offset, in bytes, where the buffer begins in the allocated region of memory (depends
+		on bufferInfo.usage and bufferInfo.flags)
+		3. memoryTypeBits: bit field of the memory types that are suitable for the buffer
+
+		*/
+
+		VkBufferCreateInfo bufferInfo = {};
+		bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+		bufferInfo.size = size;
+		bufferInfo.usage = usage;
+		bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+		if (vkCreateBuffer(mDevice, &bufferInfo, nullptr, &buffer) != VK_SUCCESS)
+		{
+			throw std::runtime_error("Failed to create buffer object.");
+		}
+
+		// query memory requirements
+		VkMemoryRequirements memRequirements;
+		vkGetBufferMemoryRequirements(mDevice, buffer, &memRequirements);
+
+		VkMemoryAllocateInfo allocInfo = {};
+		allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+		allocInfo.allocationSize = memRequirements.size;
+		allocInfo.memoryTypeIndex = findMemoryType(memRequirements.memoryTypeBits, properties);
+		
+		if (vkAllocateMemory(mDevice, &allocInfo, nullptr, &bufferMemory) != VK_SUCCESS)
+		{
+			throw std::runtime_error("Failed to allocate buffer memory.");
 		}
 
 		std::cout << "Successfully allocated " << memRequirements.size << " bytes of buffer memory." << std::endl;
 
 		// associate this memory with the buffer
-		vkBindBufferMemory(mDevice, mVertexBuffer, mVertexBufferMemory, 0); // if the offset is non-zero, then it is required to be divisible by memRequirements.alignment
-	
-		// copy CPU-side vertex data into the buffer
+		vkBindBufferMemory(mDevice, buffer, bufferMemory, 0); // if the offset is non-zero, then it is required to be divisible by memRequirements.alignment
+	}
+
+	//! create a GPU-side buffer to hold the specified vertex data
+	void createVertexBuffer()
+	{
+		/*
+		
+		The memory type that allows us to access it from the CPU may not be the most optimal memory
+		type for the graphics card itself to read from. The most optimal memory has the VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT
+		flag and is usually not accessible by the CPU on dedicated graphics cards. The buffer copy
+		command requires a queue family that supports transfer operations, which is indicated using the
+		VK_QUEUE_TRANSFER_BIT. Any queue family with VK_QUEUE_GRAPHICS_BIT or VK_QUEUE_COMPUTE_BIT capabilities
+		already implicitly supports transfer operations.
+
+		*/
+		
+		VkDeviceSize bufferSize = sizeof(vertices[0]) * vertices.size();
+
+		// create a staging buffer
+		vk::Deleter<VkBuffer> stagingBuffer{ mDevice, vkDestroyBuffer };
+		vk::Deleter<VkDeviceMemory> stagingBufferMemory{ mDevice, vkFreeMemory };
+		createBuffer(bufferSize,
+			VK_BUFFER_USAGE_TRANSFER_SRC_BIT, // buffer can be used as the source in a memory transfer operation
+			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+			stagingBuffer,
+			stagingBufferMemory);
+
+		// copy CPU-side vertex data into the staging buffer
 		void* data;
-		vkMapMemory(mDevice, mVertexBufferMemory, 0, bufferInfo.size, 0, &data);
-		memcpy(data, vertices.data(), (size_t)bufferInfo.size);
-		vkUnmapMemory(mDevice, mVertexBufferMemory);
+		vkMapMemory(mDevice, stagingBufferMemory, 0, bufferSize, 0, &data);
+		memcpy(data, vertices.data(), (size_t)bufferSize);
+		vkUnmapMemory(mDevice, stagingBufferMemory);
+
+		// create a vertex buffer
+		createBuffer(bufferSize,
+			VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, // buffer can be used as the destination in a memory transfer operation
+			VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+			mVertexBuffer,
+			mVertexBufferMemory);
+
+		// copy data between buffers
+		copyBuffer(stagingBuffer, mVertexBuffer, bufferSize);
 	}
 	
+	//! create a GPU-side buffer to hold the specified vertex indices
+	void createIndexBuffer()
+	{
+		VkDeviceSize bufferSize = sizeof(indices[0]) * indices.size();
+
+		// create a staging buffer
+		vk::Deleter<VkBuffer> stagingBuffer{ mDevice, vkDestroyBuffer };
+		vk::Deleter<VkDeviceMemory> stagingBufferMemory{ mDevice, vkFreeMemory };
+		createBuffer(bufferSize,
+			VK_BUFFER_USAGE_TRANSFER_SRC_BIT, 
+			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+			stagingBuffer,
+			stagingBufferMemory);
+
+		// copy CPU-side vertex data into the staging buffer
+		void* data;
+		vkMapMemory(mDevice, stagingBufferMemory, 0, bufferSize, 0, &data);
+		memcpy(data, indices.data(), (size_t)bufferSize);
+		vkUnmapMemory(mDevice, stagingBufferMemory);
+
+		// create a vertex buffer
+		createBuffer(bufferSize,
+			VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
+			VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+			mIndexBuffer,
+			mIndexBufferMemory);
+
+		// copy data between buffers
+		copyBuffer(stagingBuffer, mIndexBuffer, bufferSize);
+	}
+
+	void createUniformBuffer()
+	{
+		VkDeviceSize bufferSize = sizeof(UniformBufferObject);
+
+		createBuffer(bufferSize, 
+			VK_BUFFER_USAGE_TRANSFER_SRC_BIT, 
+			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, 
+			mUniformStagingBuffer, 
+			mUniformStagingBufferMemory);
+
+		createBuffer(bufferSize, 
+			VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, 
+			VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 
+			mUniformBuffer, 
+			mUniformBufferMemory);
+	}
+
+	//! creates a temporary command buffer for copying data between two buffers
+	void copyBuffer(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size)
+	{
+		VkCommandBufferAllocateInfo allocInfo = {};
+		allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+		allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+		allocInfo.commandPool = mCommandPool;
+		allocInfo.commandBufferCount = 1;
+
+		VkCommandBuffer commandBuffer;
+		vkAllocateCommandBuffers(mDevice, &allocInfo, &commandBuffer);
+
+		VkCommandBufferBeginInfo beginInfo = {};
+		beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+		beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT; // only use the command buffer once
+		
+		// begin recording into the command buffer
+		vkBeginCommandBuffer(commandBuffer, &beginInfo);
+
+		// copy command
+		VkBufferCopy copyRegion = {};
+		copyRegion.srcOffset = 0; // optional
+		copyRegion.dstOffset = 0; // optional
+		copyRegion.size = size;
+		vkCmdCopyBuffer(commandBuffer, srcBuffer, dstBuffer, 1, &copyRegion);
+
+		// stop recording into the command buffer
+		vkEndCommandBuffer(commandBuffer);
+
+		// submit the command buffer to the queue
+		VkSubmitInfo submitInfo = {};
+		submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+		submitInfo.commandBufferCount = 1;
+		submitInfo.pCommandBuffers = &commandBuffer;
+
+		vkQueueSubmit(mGraphicsQueue, 1, &submitInfo, VK_NULL_HANDLE);
+		vkQueueWaitIdle(mGraphicsQueue); // wait for the transfer operation to finish
+
+		vkFreeCommandBuffers(mDevice, mCommandPool, 1, &commandBuffer);
+	}
+
 	//! called from createVertexBuffer to find the appropriate memory type to use 
 	uint32_t findMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties)
 	{
@@ -1637,17 +1978,23 @@ private:
 			// bind the graphics pipeline: notice the second parameter which tells Vulkan that this is a graphics (not compute) pipeline
 			vkCmdBindPipeline(mCommandBuffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS, mGraphicsPipeline);
 
+			// bind the uniform buffer
+			vkCmdBindDescriptorSets(mCommandBuffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS, mPipelineLayout, 0, 1, &mDescriptorSet, 0, nullptr);
+
 			// bind the vertex buffer
 			VkBuffer vertexBuffers[] = { mVertexBuffer };
 			VkDeviceSize offsets[] = { 0 };
 			vkCmdBindVertexBuffers(mCommandBuffers[i], 0, 1, vertexBuffers, offsets);
 
+			// bind the index buffer
+			vkCmdBindIndexBuffer(mCommandBuffers[i], mIndexBuffer, 0, VK_INDEX_TYPE_UINT16);
+
 			// actual draw command:
-			// vertex count
+			// index count
 			// instance count
-			// first vertex
+			// first index
 			// first instance
-			vkCmdDraw(mCommandBuffers[i], 3, 1, 0, 0);
+			vkCmdDrawIndexed(mCommandBuffers[i], indices.size(), 1, 0, 0, 0);
 
 			// end the render pass
 			vkCmdEndRenderPass(mCommandBuffers[i]);
@@ -1843,12 +2190,23 @@ private:
 
 	/* Graphics pipeline related */
 	vk::Deleter<VkRenderPass> mRenderPass{ mDevice, vkDestroyRenderPass };
+	vk::Deleter<VkDescriptorSetLayout> mDescriptorSetLayout{ mDevice, vkDestroyDescriptorSetLayout };
+	vk::Deleter<VkDescriptorPool> mDescriptorPool{ mDevice, vkDestroyDescriptorPool };
+	VkDescriptorSet mDescriptorSet;
 	vk::Deleter<VkPipelineLayout> mPipelineLayout{ mDevice, vkDestroyPipelineLayout };	// for describing uniform layouts: should be destroyed before the render pass above
 	vk::Deleter<VkPipeline> mGraphicsPipeline{ mDevice, vkDestroyPipeline };
-	vk::Deleter<VkBuffer> mVertexBuffer{ mDevice, vkDestroyBuffer };
-	vk::Deleter<VkDeviceMemory> mVertexBufferMemory{ mDevice, vkFreeMemory };
 	std::vector<vk::Deleter<VkFramebuffer>> mSwapChainFramebuffers;
 	
+	/* Buffers and device memory related */
+	vk::Deleter<VkBuffer> mVertexBuffer{ mDevice, vkDestroyBuffer };
+	vk::Deleter<VkDeviceMemory> mVertexBufferMemory{ mDevice, vkFreeMemory };
+	vk::Deleter<VkBuffer> mIndexBuffer{ mDevice, vkDestroyBuffer };
+	vk::Deleter<VkDeviceMemory> mIndexBufferMemory{ mDevice, vkFreeMemory };
+	vk::Deleter<VkBuffer> mUniformStagingBuffer{ mDevice, vkDestroyBuffer };
+	vk::Deleter<VkDeviceMemory> mUniformStagingBufferMemory{ mDevice, vkFreeMemory };
+	vk::Deleter<VkBuffer> mUniformBuffer{ mDevice, vkDestroyBuffer };
+	vk::Deleter<VkDeviceMemory> mUniformBufferMemory{ mDevice, vkFreeMemory };
+
 	/* Command pool related */
 	vk::Deleter<VkCommandPool> mCommandPool{ mDevice, vkDestroyCommandPool };
 	std::vector<VkCommandBuffer> mCommandBuffers;										// automatically freed when the VkCommandPool is destroyed

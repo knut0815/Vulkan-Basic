@@ -104,7 +104,7 @@
       <WarningLevel>Level3</WarningLevel>
       <Optimization>Disabled</Optimization>
       <PreprocessorDefinitions>_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>C:\Users\michael.walczyk\Documents\Visual Studio 2015\Libraries\glm;C:\Users\michael.walczyk\Documents\Visual Studio 2015\Libraries\glfw\include\GLFW;C:\VulkanSDK\1.0.17.0\Include\vulkan</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>C:\Users\michael.walczyk\Documents\Visual Studio 2015\Libraries\glm;C:\Users\michael.walczyk\Documents\Visual Studio 2015\Libraries\glfw\include\GLFW;C:\VulkanSDK\1.0.17.0\Include\vulkan;C:\Users\michael.walczyk\Documents\Visual Studio 2015\Libraries\stb</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -142,7 +142,7 @@
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <PreprocessorDefinitions>NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>C:\Users\michael.walczyk\Documents\Visual Studio 2015\Libraries\glm;C:\Users\michael.walczyk\Documents\Visual Studio 2015\Libraries\glfw\include\GLFW;C:\VulkanSDK\1.0.17.0\Include\vulkan</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>C:\Users\michael.walczyk\Documents\Visual Studio 2015\Libraries\glm;C:\Users\michael.walczyk\Documents\Visual Studio 2015\Libraries\glfw\include\GLFW;C:\VulkanSDK\1.0.17.0\Include\vulkan;C:\Users\michael.walczyk\Documents\Visual Studio 2015\Libraries\stb</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
