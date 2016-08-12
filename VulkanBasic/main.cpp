@@ -32,6 +32,7 @@ struct Vertex
 {
 	glm::vec2 position;
 	glm::vec3 color;
+	glm::vec2 texcoord;
 
 	//! a static function for returning the binding description of the specified vertex data
 	static VkVertexInputBindingDescription getBindingDescription()
@@ -52,7 +53,7 @@ struct Vertex
 	}
 
 	//! a static function for returning the attribute descriptions of the specified vertex data
-	static std::array<VkVertexInputAttributeDescription, 2> getAttributeDescriptions()
+	static std::array<VkVertexInputAttributeDescription, 3> getAttributeDescriptions()
 	{
 		/*
 		
@@ -62,7 +63,7 @@ struct Vertex
 		
 		*/
 
-		std::array<VkVertexInputAttributeDescription, 2> attributeDescriptions = {};
+		std::array<VkVertexInputAttributeDescription, 3> attributeDescriptions = {};
 
 		// position
 		attributeDescriptions[0].binding = 0;						// the binding that the per-vertex data comes from
@@ -76,6 +77,12 @@ struct Vertex
 		attributeDescriptions[1].format = VK_FORMAT_R32G32B32_SFLOAT;
 		attributeDescriptions[1].offset = offsetof(Vertex, color);
 
+		// texcoord
+		attributeDescriptions[2].binding = 0;
+		attributeDescriptions[2].location = 2;
+		attributeDescriptions[2].format = VK_FORMAT_R32G32_SFLOAT;
+		attributeDescriptions[2].offset = offsetof(Vertex, texcoord);
+
 		return attributeDescriptions;
 	}
 };
@@ -88,10 +95,10 @@ struct UniformBufferObject
 };
 
 const std::vector<Vertex> vertices = {
-	{ { -0.5f, -0.5f },	{ 1.0f, 0.0f, 0.0f } },
-	{ { 0.5f, -0.5f },	{ 0.0f, 1.0f, 0.0f } },
-	{ { 0.5f, 0.5f },	{ 0.0f, 0.0f, 1.0f } },
-	{ { -0.5f, 0.5f },	{ 1.0f, 1.0f, 1.0f } }
+	{ { -0.5f, -0.5f },	{ 1.0f, 0.0f, 0.0f }, { 0.0f, 0.0f }},
+	{ { 0.5f, -0.5f },	{ 0.0f, 1.0f, 0.0f }, { 1.0f, 0.0f } },
+	{ { 0.5f, 0.5f },	{ 0.0f, 0.0f, 1.0f }, { 1.0f, 1.0f } },
+	{ { -0.5f, 0.5f },	{ 1.0f, 1.0f, 1.0f }, { 0.0f, 1.0f } }
 };
 
 const std::vector<uint16_t> indices = {
@@ -158,6 +165,8 @@ private:
 		createFramebuffers();
 		createCommandPool();
 		createTextureImage();
+		createTextureImageView();
+		createTextureSampler();
 		createVertexBuffer();
 		createIndexBuffer();
 		createUniformBuffer();
@@ -1038,33 +1047,10 @@ private:
 		// resize the list of image views and define the deleter function
 		mSwapChainImageViews.resize(mSwapChainImages.size(), vk::Deleter<VkImageView>{ mDevice, vkDestroyImageView });
 
-		// now, iterate over all of the swa chain images
+		// now, iterate over all of the swap chain images
 		for (uint32_t i = 0; i < mSwapChainImages.size(); ++i)
 		{
-			VkImageViewCreateInfo createInfo = {};
-			createInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-			createInfo.image = mSwapChainImages[i];
-			createInfo.viewType = VK_IMAGE_VIEW_TYPE_2D; // how we want to treat the image view (2D texture)
-			createInfo.format = mSwapChainImageFormat; 
-
-			// these allow you to swizzle the color channels around - we stick to the default mapping
-			createInfo.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
-			createInfo.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
-			createInfo.components.b = VK_COMPONENT_SWIZZLE_IDENTITY;
-			createInfo.components.a = VK_COMPONENT_SWIZZLE_IDENTITY;
-
-			// describe the image's purpose and which part of the image should be accessed
-			createInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-			createInfo.subresourceRange.baseMipLevel = 0;
-			createInfo.subresourceRange.levelCount = 1;
-			createInfo.subresourceRange.baseArrayLayer = 0;
-			createInfo.subresourceRange.layerCount = 1;
-
-			// finally, create the image view
-			if (vkCreateImageView(mDevice, &createInfo, nullptr, &mSwapChainImageViews[i]) != VK_SUCCESS)
-			{
-				throw std::runtime_error("Failed to create image view.");
-			}
+			createImageView(mSwapChainImages[i], mSwapChainImageFormat, mSwapChainImageViews[i]);
 		}
 
 		std::cout << "Successfully created " << mSwapChainImageViews.size() << " image views." << std::endl;
@@ -1073,17 +1059,29 @@ private:
 	//! create a descriptor set layout to describe the types of resources that are going to be accessed by the graphics pipeline
 	void createDescriptorSetLayout()
 	{
+		// uniform buffer object
 		VkDescriptorSetLayoutBinding uboLayoutBinding = {};
 		uboLayoutBinding.binding = 0;
 		uboLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
 		uboLayoutBinding.descriptorCount = 1;
-		uboLayoutBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT; // the shader stage(s) that will reference this descriptor (could use VK_SHADER_STAGE_ALL_GRAPHICS)
-		uboLayoutBinding.pImmutableSamplers = nullptr; // optional
+		uboLayoutBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;	// the shader stage(s) that will reference this descriptor (could use VK_SHADER_STAGE_ALL_GRAPHICS)
+		uboLayoutBinding.pImmutableSamplers = nullptr;				// optional
+
+		// combined image sampler object
+		VkDescriptorSetLayoutBinding samplerLayoutBinding = {};
+		samplerLayoutBinding.binding = 1;
+		samplerLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+		samplerLayoutBinding.descriptorCount = 1;
+		samplerLayoutBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+		samplerLayoutBinding.pImmutableSamplers = nullptr;
+
+		// both bindings
+		std::array<VkDescriptorSetLayoutBinding, 2> bindings = { uboLayoutBinding, samplerLayoutBinding };
 
 		VkDescriptorSetLayoutCreateInfo layoutInfo = {};
 		layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-		layoutInfo.bindingCount = 1;
-		layoutInfo.pBindings = &uboLayoutBinding;
+		layoutInfo.bindingCount = bindings.size();
+		layoutInfo.pBindings = bindings.data();
 
 		if (vkCreateDescriptorSetLayout(mDevice, &layoutInfo, nullptr, &mDescriptorSetLayout) != VK_SUCCESS)
 		{
@@ -1102,14 +1100,16 @@ private:
 
 		*/
 
-		VkDescriptorPoolSize poolSize = {};
-		poolSize.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-		poolSize.descriptorCount = 1;
+		std::array<VkDescriptorPoolSize, 2> poolSizes = {};
+		poolSizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;			// ubo
+		poolSizes[0].descriptorCount = 1;
+		poolSizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;	// sampler
+		poolSizes[1].descriptorCount = 1;
 
 		VkDescriptorPoolCreateInfo poolInfo = {};
 		poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-		poolInfo.poolSizeCount = 1;
-		poolInfo.pPoolSizes = &poolSize;
+		poolInfo.poolSizeCount = poolSizes.size();
+		poolInfo.pPoolSizes = poolSizes.data();
 		poolInfo.maxSets = 1;
 
 		if (vkCreateDescriptorPool(mDevice, &poolInfo, nullptr, &mDescriptorPool) != VK_SUCCESS)
@@ -1124,11 +1124,11 @@ private:
 	void createDescriptorSet()
 	{
 		/*
-		
+
 		Shaders access buffer and image resources by using special shader variables which are indirectly
 		bound to buffer and image views via the API. These variables are organized into sets, where each
-		set of bindings is represented by a descriptor set object in the API and a descriptor set is 
-		bound all at once. 
+		set of bindings is represented by a descriptor set object in the API and a descriptor set is
+		bound all at once.
 
 		A descriptor is an opaque data structure representing a shader resource such as a buffer view,
 		image view, sampler, or combined image sampler. The content of each is determined by its descriptor
@@ -1151,24 +1151,43 @@ private:
 
 		std::cout << "Successfully allocated descriptor set." << std::endl;
 
-		// configure the descriptors within this descriptor set
+		// configure the descriptor for the ubo
 		VkDescriptorBufferInfo bufferInfo = {};
 		bufferInfo.buffer = mUniformBuffer;
 		bufferInfo.offset = 0;
 		bufferInfo.range = sizeof(UniformBufferObject);
 
-		VkWriteDescriptorSet descriptorWrite = {};
-		descriptorWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-		descriptorWrite.dstSet = mDescriptorSet;
-		descriptorWrite.dstBinding = 0;
-		descriptorWrite.dstArrayElement = 0;
-		descriptorWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-		descriptorWrite.descriptorCount = 1;
-		descriptorWrite.pBufferInfo = &bufferInfo;
-		descriptorWrite.pImageInfo = nullptr; // optional
-		descriptorWrite.pTexelBufferView = nullptr; // optional
+		// configure the descriptor for the sampler
+		VkDescriptorImageInfo imageInfo = {};
+		imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		imageInfo.imageView = mTextureImageView;
+		imageInfo.sampler = mTextureSampler;
 
-		vkUpdateDescriptorSets(mDevice, 1, &descriptorWrite, 0, nullptr);
+		std::array<VkWriteDescriptorSet, 2> descriptorWrites = {};
+
+		// ubo
+		descriptorWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+		descriptorWrites[0].dstSet = mDescriptorSet;
+		descriptorWrites[0].dstBinding = 0;
+		descriptorWrites[0].dstArrayElement = 0;
+		descriptorWrites[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+		descriptorWrites[0].descriptorCount = 1;
+		descriptorWrites[0].pBufferInfo = &bufferInfo;
+		descriptorWrites[0].pImageInfo = nullptr;		// optional
+		descriptorWrites[0].pTexelBufferView = nullptr;	// optional
+
+		// sampler
+		descriptorWrites[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+		descriptorWrites[1].dstSet = mDescriptorSet;
+		descriptorWrites[1].dstBinding = 1;
+		descriptorWrites[1].dstArrayElement = 0;
+		descriptorWrites[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+		descriptorWrites[1].descriptorCount = 1;
+		descriptorWrites[1].pBufferInfo = nullptr;
+		descriptorWrites[1].pImageInfo = &imageInfo;	// optional
+		descriptorWrites[1].pTexelBufferView = nullptr;	// optional
+
+		vkUpdateDescriptorSets(mDevice, descriptorWrites.size(), descriptorWrites.data(), 0, nullptr);
 	}
 
 	//! sets up a rendering pipeline by creating shader modules and specifying viewport, scissor, blend, rasterizer, and multisampling settings
@@ -1609,10 +1628,11 @@ private:
 		std::cout << "Successfully created command pool object." << std::endl;
 	}
 
+	//! create an image from a STB image
 	void createTextureImage()
 	{
 		int texWidth, texHeight, texChannels;
-		stbi_uc* pixels = stbi_load("textures/texture.png", &texWidth, &texHeight, &texChannels, STBI_rgb_alpha);
+		stbi_uc* pixels = stbi_load("textures/texture.jpg", &texWidth, &texHeight, &texChannels, STBI_rgb_alpha);
 		std::cout << "Loaded STB image file, resolution: " << texWidth << " x " << texHeight << std::endl;
 
 		VkDeviceSize imageSize = texWidth * texHeight * 4;
@@ -1625,41 +1645,15 @@ private:
 		vk::Deleter<VkImage> stagingImage{ mDevice, vkDestroyImage };
 		vk::Deleter<VkDeviceMemory> stagingImageMemory{ mDevice, vkFreeMemory };
 
-		VkImageCreateInfo imageInfo = {};
-		imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-		imageInfo.imageType = VK_IMAGE_TYPE_2D;
-		imageInfo.extent.width = texWidth;
-		imageInfo.extent.height = texHeight;
-		imageInfo.extent.depth = 1;
-		imageInfo.mipLevels = 1;
-		imageInfo.arrayLayers = 1;
-		imageInfo.format = VK_FORMAT_R8G8B8A8_UNORM;				// format that the loaded pixels will be converted to
-		imageInfo.tiling = VK_IMAGE_TILING_LINEAR;					// either VK_IMAGE_TILING_LINEAR (row-major order) or VK_IMAGE_TILING_OPTIMAL (implementation defined)
-		imageInfo.initialLayout = VK_IMAGE_LAYOUT_PREINITIALIZED;	// not usable by the GPU, but the first transition will preserve the texels
-		imageInfo.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT;			// set up as transfer source (since this is the staging image)
-		imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;			// only used by one queue family: the one that supports transfer operations
-		imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;					// related to multisampling (only relevant for images that will be used as attachments)
-		imageInfo.flags = 0;										// optional
-
-		if (vkCreateImage(mDevice, &imageInfo, nullptr, &stagingImage) != VK_SUCCESS)
-		{
-			throw std::runtime_error("Failed to create image.");
-		}
-
-		VkMemoryRequirements memRequirements;
-		vkGetImageMemoryRequirements(mDevice, stagingImage, &memRequirements);
-
-		VkMemoryAllocateInfo allocInfo = {};
-		allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-		allocInfo.allocationSize = memRequirements.size;
-		allocInfo.memoryTypeIndex = findMemoryType(memRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-		
-		if (vkAllocateMemory(mDevice, &allocInfo, nullptr, &stagingImageMemory) != VK_SUCCESS)
-		{
-			throw std::runtime_error("Failed to allocation image memory.");
-		}
-
-		vkBindImageMemory(mDevice, stagingImage, stagingImageMemory, 0);
+		// create staging image and memory
+		createImage(texWidth, 
+			texHeight, 
+			VK_FORMAT_R8G8B8A8_UNORM, 
+			VK_IMAGE_TILING_LINEAR, 
+			VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, 
+			stagingImage, 
+			stagingImageMemory);
 
 		// transfer pixel data from CPU to GPU (host visible) memory
 		void* data;
@@ -1669,11 +1663,223 @@ private:
 
 		std::cout << "Successfully loaded STB image data into host visible (staging) memory." << std::endl;
 
+		// create final image and memory 
+		createImage(texWidth, 
+			texHeight,
+			VK_FORMAT_R8G8B8A8_UNORM,
+			VK_IMAGE_TILING_OPTIMAL,
+			VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, // we want to be able to sample texels from it in the shader
+			VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+			mTextureImage,
+			mTextureImageMemory);
+
+		// prepare the images for a copy operation by transitioning their layouts 
+		transitionImageLayout(stagingImage, VK_IMAGE_LAYOUT_PREINITIALIZED, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+		transitionImageLayout(mTextureImage, VK_IMAGE_LAYOUT_PREINITIALIZED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+		copyImage(stagingImage, mTextureImage, texWidth, texHeight);
+
+		// to enable sampling from the newly created texture image, we need to do one more layout transition
+		transitionImageLayout(mTextureImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+
 		// free the CPU-side memory
 		stbi_image_free(pixels);
 	}
+	
+	//! a helper function for creating an image and its associated memory
+	void createImage(uint32_t width,
+		uint32_t height,
+		VkFormat format,
+		VkImageTiling tiling,
+		VkImageUsageFlags usage,
+		VkMemoryPropertyFlags properties,
+		vk::Deleter<VkImage>& image,
+		vk::Deleter<VkDeviceMemory>& imageMemory)
+	{
+		VkImageCreateInfo imageInfo = {};
+		imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+		imageInfo.imageType = VK_IMAGE_TYPE_2D;
+		imageInfo.extent.width = width;
+		imageInfo.extent.height = height;
+		imageInfo.extent.depth = 1;
+		imageInfo.mipLevels = 1;
+		imageInfo.arrayLayers = 1;
+		imageInfo.format = format;									// format that the loaded pixels will be converted to
+		imageInfo.tiling = tiling;									// either VK_IMAGE_TILING_LINEAR (row-major order) or VK_IMAGE_TILING_OPTIMAL (implementation defined)
+		imageInfo.initialLayout = VK_IMAGE_LAYOUT_PREINITIALIZED;	// not usable by the GPU, but the first transition will preserve the texels
+		imageInfo.usage = usage;									// set up as transfer source (since this is the staging image)
+		imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;			// only used by one queue family: the one that supports transfer operations
+		imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;					// related to multisampling (only relevant for images that will be used as attachments)
+		imageInfo.flags = 0;										// optional
 
-	//! helper function for abstracting buffer creation
+		if (vkCreateImage(mDevice, &imageInfo, nullptr, &image) != VK_SUCCESS)
+		{
+			throw std::runtime_error("Failed to create image.");
+		}
+
+		VkMemoryRequirements memRequirements;
+		vkGetImageMemoryRequirements(mDevice, image, &memRequirements);
+
+		VkMemoryAllocateInfo allocInfo = {};
+		allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+		allocInfo.allocationSize = memRequirements.size;
+		allocInfo.memoryTypeIndex = findMemoryType(memRequirements.memoryTypeBits, properties);
+
+		if (vkAllocateMemory(mDevice, &allocInfo, nullptr, &imageMemory) != VK_SUCCESS)
+		{
+			throw std::runtime_error("Failed to allocation image memory.");
+		}
+
+		vkBindImageMemory(mDevice, image, imageMemory, 0);
+	}
+
+	//! a helper function for transitioning between two image layouts
+	void transitionImageLayout(VkImage image,
+		VkImageLayout oldLayout,
+		VkImageLayout newLayout)
+	{
+		VkCommandBuffer commandBuffer = beginSingleTimeCommands();
+
+		// transitioning image layouts requires synchronization: for this, we use a type of pipeline barrier
+		VkImageMemoryBarrier barrier = {};
+		barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+		barrier.oldLayout = oldLayout;
+		barrier.newLayout = newLayout;
+		barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED; // we aren't using the barrier to transfer queue family ownership, but this field is still required
+		barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		barrier.image = image;
+		barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		barrier.subresourceRange.baseMipLevel = 0;
+		barrier.subresourceRange.levelCount = 1;
+		barrier.subresourceRange.baseArrayLayer = 0;
+		barrier.subresourceRange.layerCount = 1;
+		
+		// we need to set our srcAccessMask and dstAccessMask based on the transitions we intend to handle
+		// 1. preinitialized -> transfer source: transfer reads should wait on host writes
+		// 2. preinitialized -> transfer destination: transfer writes should wait on host writes
+		// 3. transfer destination -> shader reading: shader reads should wait on transfer writes
+		if (oldLayout == VK_IMAGE_LAYOUT_PREINITIALIZED && newLayout == VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL) 
+		{
+			barrier.srcAccessMask = VK_ACCESS_HOST_WRITE_BIT;
+			barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+		}
+		else if (oldLayout == VK_IMAGE_LAYOUT_PREINITIALIZED && newLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL) 
+		{
+			barrier.srcAccessMask = VK_ACCESS_HOST_WRITE_BIT;
+			barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+		}
+		else if (oldLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL && newLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) 
+		{
+			barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+			barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+		}
+		else 
+		{
+			throw std::invalid_argument("Unsupported image layout transition.");
+		}
+
+		vkCmdPipelineBarrier(commandBuffer,
+			VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, 
+			VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, // the pipeline stage in which operations will wait on the barrier: we want it to happen immediately
+			0,
+			0, nullptr,
+			0, nullptr,
+			1, &barrier);
+
+		endSingleTimeCommands(commandBuffer);
+	}
+
+	//! a helper function for copying data between two images
+	void copyImage(VkImage srcImage,
+		VkImage dstImage,
+		uint32_t width,
+		uint32_t height)
+	{
+		VkCommandBuffer commandBuffer = beginSingleTimeCommands();
+
+		VkImageSubresourceLayers subResource = {};
+		subResource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		subResource.baseArrayLayer = 0;
+		subResource.mipLevel = 0;
+		subResource.layerCount = 1;
+
+		VkImageCopy region = {};
+		region.srcSubresource = subResource;
+		region.dstSubresource = subResource;
+		region.srcOffset = { 0, 0, 0 };
+		region.dstOffset = { 0, 0, 0 };
+		region.extent.width = width;
+		region.extent.height = height;
+		region.extent.depth = 1;
+
+		vkCmdCopyImage(commandBuffer,
+			srcImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+			dstImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+			1, &region);
+
+		endSingleTimeCommands(commandBuffer);
+	}
+
+	//! create an image view that grants access to the texture image
+	void createTextureImageView()
+	{
+		createImageView(mTextureImage, VK_FORMAT_R8G8B8A8_UNORM, mTextureImageView);
+		std::cout << "Successfully created texture image view for STB image." << std::endl;
+	}
+
+	//! a helper function for creating an image view from an image
+	void createImageView(VkImage image,
+		VkFormat format,
+		vk::Deleter<VkImageView>& imageView)
+	{
+		VkImageViewCreateInfo viewInfo = {};
+		viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+		viewInfo.image = image;
+		viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+		viewInfo.format = format;
+		viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		viewInfo.subresourceRange.baseMipLevel = 0;
+		viewInfo.subresourceRange.levelCount = 1;
+		viewInfo.subresourceRange.baseArrayLayer = 0;
+		viewInfo.subresourceRange.layerCount = 1;
+
+		if (vkCreateImageView(mDevice, &viewInfo, nullptr, &imageView) != VK_SUCCESS)
+		{
+			throw std::runtime_error("Failed to create texture image view.");
+		}
+	}
+
+	//! create a sampler to extract colors from an image
+	void createTextureSampler()
+	{
+		// note that the sampler does not reference a VkImage anywhere: it is an independent object that provides 
+		// an interface to extract colors from a texture and can be applied to any image you want (1D, 2D, or 3D)
+		VkSamplerCreateInfo samplerInfo = {};
+		samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+		samplerInfo.magFilter = VK_FILTER_LINEAR;
+		samplerInfo.minFilter = VK_FILTER_LINEAR;
+		samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+		samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+		samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+		samplerInfo.anisotropyEnable = VK_TRUE;
+		samplerInfo.maxAnisotropy = 16;
+		samplerInfo.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
+		samplerInfo.unnormalizedCoordinates = VK_FALSE; // we want to use texture coordinates from 0...1
+		samplerInfo.compareEnable = VK_FALSE;			// mostly used for percentage-close filtering
+		samplerInfo.compareOp = VK_COMPARE_OP_ALWAYS;
+		samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+		samplerInfo.mipLodBias = 0.0f;
+		samplerInfo.minLod = 0.0f;
+		samplerInfo.maxLod = 0.0f;
+		
+		if (vkCreateSampler(mDevice, &samplerInfo, nullptr, &mTextureSampler) != VK_SUCCESS)
+		{
+			throw std::runtime_error("Failed to create texture sampler.");
+		}
+
+		std::cout << "Successfully created texture sampler object." << std::endl;
+	}
+
+	//! a helper function for abstracting buffer creation
 	void createBuffer(VkDeviceSize size, 
 		VkBufferUsageFlags usage, 
 		VkMemoryPropertyFlags properties,
@@ -1801,6 +2007,7 @@ private:
 		copyBuffer(stagingBuffer, mIndexBuffer, bufferSize);
 	}
 
+	//! create a GPU-side buffer to hold shader uniforms
 	void createUniformBuffer()
 	{
 		VkDeviceSize bufferSize = sizeof(UniformBufferObject);
@@ -1821,6 +2028,21 @@ private:
 	//! creates a temporary command buffer for copying data between two buffers
 	void copyBuffer(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size)
 	{
+		VkCommandBuffer commandBuffer = beginSingleTimeCommands();
+
+		// copy command
+		VkBufferCopy copyRegion = {};
+		copyRegion.srcOffset = 0; // optional
+		copyRegion.dstOffset = 0; // optional
+		copyRegion.size = size;
+		vkCmdCopyBuffer(commandBuffer, srcBuffer, dstBuffer, 1, &copyRegion);
+
+		endSingleTimeCommands(commandBuffer);
+	}
+
+	//! record into a single-use command buffer
+	VkCommandBuffer beginSingleTimeCommands()
+	{
 		VkCommandBufferAllocateInfo allocInfo = {};
 		allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
 		allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
@@ -1832,19 +2054,16 @@ private:
 
 		VkCommandBufferBeginInfo beginInfo = {};
 		beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-		beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT; // only use the command buffer once
-		
-		// begin recording into the command buffer
-		vkBeginCommandBuffer(commandBuffer, &beginInfo);
+		beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;	// only use the command buffer once
+							   
+		vkBeginCommandBuffer(commandBuffer, &beginInfo);				// begin recording into the command buffer
 
-		// copy command
-		VkBufferCopy copyRegion = {};
-		copyRegion.srcOffset = 0; // optional
-		copyRegion.dstOffset = 0; // optional
-		copyRegion.size = size;
-		vkCmdCopyBuffer(commandBuffer, srcBuffer, dstBuffer, 1, &copyRegion);
+		return commandBuffer;
+	}
 
-		// stop recording into the command buffer
+	//! finish recording into a single-use command buffer
+	void endSingleTimeCommands(VkCommandBuffer commandBuffer)
+	{
 		vkEndCommandBuffer(commandBuffer);
 
 		// submit the command buffer to the queue
@@ -2206,6 +2425,12 @@ private:
 	vk::Deleter<VkDeviceMemory> mUniformStagingBufferMemory{ mDevice, vkFreeMemory };
 	vk::Deleter<VkBuffer> mUniformBuffer{ mDevice, vkDestroyBuffer };
 	vk::Deleter<VkDeviceMemory> mUniformBufferMemory{ mDevice, vkFreeMemory };
+	
+	/* Textures and samplers related */
+	vk::Deleter<VkImage> mTextureImage{ mDevice, vkDestroyImage };
+	vk::Deleter<VkDeviceMemory> mTextureImageMemory{ mDevice, vkFreeMemory };
+	vk::Deleter<VkImageView> mTextureImageView{ mDevice, vkDestroyImageView };
+	vk::Deleter<VkSampler> mTextureSampler{ mDevice, vkDestroySampler };
 
 	/* Command pool related */
 	vk::Deleter<VkCommandPool> mCommandPool{ mDevice, vkDestroyCommandPool };
