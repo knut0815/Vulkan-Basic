@@ -10,9 +10,5 @@ layout(location = 0) out vec4 oColor;
 
 void main()
 {
-  vec3 textureColor = texture(uTexSampler, vTexCoord * 2.0).rgb;
-  vec3 vertexColor = vColor;
-  vec3 mixedColor = mix(textureColor, vertexColor, 0.5);
-
-  oColor = vec4(mixedColor, 1.0);
+  oColor = texture(uTexSampler, vTexCoord);
 }

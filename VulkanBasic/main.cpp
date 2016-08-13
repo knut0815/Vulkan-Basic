@@ -11,10 +11,15 @@
 #define GLM_FORCE_DEPTH_ZERO_TO_ONE
 #include "glm/glm.hpp"
 #include "glm/gtc/matrix_transform.hpp"
+#include "glm/gtx/hash.hpp"
 
 // stb headers
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
+
+// tinyobjloader headers
+#define TINYOBJLOADER_IMPLEMENTATION
+#include "tiny_obj_loader.h"
 
 // systen
 #include <iostream>
@@ -22,15 +27,19 @@
 #include <vector>
 #include <set>
 #include <array>
+#include <unordered_map>
 #include <algorithm>
 #include <fstream>
 #include <sstream>
 #include <chrono>
 
+const std::string MODEL_PATH = "models/chalet.obj";
+const std::string TEXTURE_PATH = "textures/chalet.jpg";
+
 //! a struct for managing vertex data
 struct Vertex
 {
-	glm::vec2 position;
+	glm::vec3 position;
 	glm::vec3 color;
 	glm::vec2 texcoord;
 
@@ -66,9 +75,9 @@ struct Vertex
 		std::array<VkVertexInputAttributeDescription, 3> attributeDescriptions = {};
 
 		// position
-		attributeDescriptions[0].binding = 0;						// the binding that the per-vertex data comes from
-		attributeDescriptions[0].location = 0;						// the location directive in the vertex shader
-		attributeDescriptions[0].format = VK_FORMAT_R32G32_SFLOAT;	// two floats 
+		attributeDescriptions[0].binding = 0;							// the binding that the per-vertex data comes from
+		attributeDescriptions[0].location = 0;							// the location directive in the vertex shader
+		attributeDescriptions[0].format = VK_FORMAT_R32G32B32_SFLOAT;	// two floats 
 		attributeDescriptions[0].offset = offsetof(Vertex, position);
 
 		// color
@@ -85,24 +94,33 @@ struct Vertex
 
 		return attributeDescriptions;
 	}
+
+	//! comparison operator needed for interfacing with an unordered map
+	bool operator==(const Vertex& other) const
+	{
+		return position == other.position && color == other.color && texcoord == other.texcoord;
+	}
 };
+
+//! needed for interfacing with an unordered map
+namespace std
+{
+	template<> struct hash<Vertex>
+	{
+		size_t operator()(Vertex const& vertex) const
+		{
+			return ((hash<glm::vec3>()(vertex.position) ^
+					(hash<glm::vec3>()(vertex.color) << 1)) >> 1) ^
+					(hash<glm::vec2>()(vertex.texcoord) << 1);
+		}
+	};
+}
 
 struct UniformBufferObject
 {
 	glm::mat4 model;
 	glm::mat4 view;
 	glm::mat4 projection;
-};
-
-const std::vector<Vertex> vertices = {
-	{ { -0.5f, -0.5f },	{ 1.0f, 0.0f, 0.0f }, { 0.0f, 0.0f }},
-	{ { 0.5f, -0.5f },	{ 0.0f, 1.0f, 0.0f }, { 1.0f, 0.0f } },
-	{ { 0.5f, 0.5f },	{ 0.0f, 0.0f, 1.0f }, { 1.0f, 1.0f } },
-	{ { -0.5f, 0.5f },	{ 1.0f, 1.0f, 1.0f }, { 0.0f, 1.0f } }
-};
-
-const std::vector<uint16_t> indices = {
-	0, 1, 2, 2, 3, 0
 };
 
 class BasicApp
@@ -162,11 +180,13 @@ private:
 		createRenderPass();
 		createDescriptorSetLayout();
 		createGraphicsPipeline();
-		createFramebuffers();
 		createCommandPool();
+		createDepthResource();
+		createFramebuffers();
 		createTextureImage();
 		createTextureImageView();
 		createTextureSampler();
+		loadModel();
 		createVertexBuffer();
 		createIndexBuffer();
 		createUniformBuffer();
@@ -198,7 +218,7 @@ private:
 
 		UniformBufferObject ubo = {};
 		ubo.model = glm::rotate(glm::mat4(), time * glm::radians(90.0f), glm::vec3(0.0f, 0.0f, 1.0f));
-		ubo.view = glm::lookAt(glm::vec3(2.0f, 2.0f, 2.0f), glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3(0.0f, 1.0f, 0.0f));
+		ubo.view = glm::lookAt(glm::vec3(2.0f, 2.0f, 2.0f), glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3(0.0f, 0.0f, 1.0f));
 		ubo.projection = glm::perspective(glm::radians(45.0f), mSwapChainExtent.width / static_cast<float>(mSwapChainExtent.height), 0.1f, 10.0f);
 		ubo.projection[1][1] *= -1;
 
@@ -1050,7 +1070,7 @@ private:
 		// now, iterate over all of the swap chain images
 		for (uint32_t i = 0; i < mSwapChainImages.size(); ++i)
 		{
-			createImageView(mSwapChainImages[i], mSwapChainImageFormat, mSwapChainImageViews[i]);
+			createImageView(mSwapChainImages[i], mSwapChainImageFormat, VK_IMAGE_ASPECT_COLOR_BIT, mSwapChainImageViews[i]);
 		}
 
 		std::cout << "Successfully created " << mSwapChainImageViews.size() << " image views." << std::endl;
@@ -1373,6 +1393,19 @@ private:
 			throw std::runtime_error("Failed to created pipeline layout.");
 		}
 
+		// configure depth and stencil testing
+		VkPipelineDepthStencilStateCreateInfo depthStencil = {};
+		depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+		depthStencil.depthTestEnable = VK_TRUE;
+		depthStencil.depthWriteEnable = VK_TRUE;
+		depthStencil.depthCompareOp = VK_COMPARE_OP_LESS;
+		depthStencil.depthBoundsTestEnable = VK_FALSE;	// used for optional depth bounds test
+		depthStencil.minDepthBounds = 0.0f;				// optional (see above)
+		depthStencil.maxDepthBounds = 1.0f;				// optional (see above)
+		depthStencil.stencilTestEnable = VK_FALSE;
+		depthStencil.front = {};						// optional (not using stencil test)
+		depthStencil.back = {};							// optional (not using stencil test)
+
 		// create the graphics pipeline 
 		VkGraphicsPipelineCreateInfo pipelineInfo = {};
 		pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
@@ -1383,17 +1416,13 @@ private:
 		pipelineInfo.pViewportState = &viewportState;
 		pipelineInfo.pRasterizationState = &rasterizer;
 		pipelineInfo.pMultisampleState = &multisampling;
-		pipelineInfo.pDepthStencilState = nullptr; // optional
+		pipelineInfo.pDepthStencilState = &depthStencil;	// depth and stencil test (configured above)
 		pipelineInfo.pColorBlendState = &colorBlending;
-		pipelineInfo.pDynamicState = nullptr; // optional
-
-		pipelineInfo.layout = mPipelineLayout; // handle (rather than struct pointer)
-
-		pipelineInfo.renderPass = mRenderPass; // handle to render pass (created prior to this function call)
+		pipelineInfo.pDynamicState = nullptr;				// optional
+		pipelineInfo.layout = mPipelineLayout;				// handle (rather than struct pointer)
+		pipelineInfo.renderPass = mRenderPass;				// handle to render pass (created prior to this function call)
 		pipelineInfo.subpass = 0;
-
-		// Vulkan allows you to create a new graphics pipeline by deriving it from an existing pipeline: null for now
-		pipelineInfo.basePipelineHandle = VK_NULL_HANDLE;
+		pipelineInfo.basePipelineHandle = VK_NULL_HANDLE;	// Vulkan allows you to create a new graphics pipeline by deriving it from an existing pipeline: null for now
 		pipelineInfo.basePipelineIndex = -1;
 
 		if (vkCreateGraphicsPipelines(mDevice, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &mGraphicsPipeline) != VK_SUCCESS) 
@@ -1448,6 +1477,7 @@ private:
 
 		*/
 		
+		// color attachment
 		VkAttachmentDescription colorAttachment = {};
 		colorAttachment.format = mSwapChainImageFormat;
 		colorAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
@@ -1464,26 +1494,43 @@ private:
 		colorAttachmentRef.attachment = 0; // our array consists of a single VkAttachmentDescription so the index is 0
 		colorAttachmentRef.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 
+		// depth attachment
+		VkAttachmentDescription depthAttachment = {};
+		depthAttachment.format = findDepthFormat();
+		depthAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
+		depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+		depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;							// we don't plan on using the depth information after drawing has finished
+		depthAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+		depthAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+		depthAttachment.initialLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;	// the layout will not change during rendering, so initial and final are the same
+		depthAttachment.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+
+		VkAttachmentReference depthAttachmentReference = {};
+		depthAttachmentReference.attachment = 1;
+		depthAttachmentReference.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+
 		// describe the subpass
 		VkSubpassDescription subPass = {};
-		subPass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS; // Vulkan may support compute subpasses in the future...
-		subPass.colorAttachmentCount = 1;
+		subPass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;	// Vulkan may support compute subpasses in the future...
+		subPass.colorAttachmentCount = 1;								// note that we can use multiple color attachments but only one depth attachment
 		subPass.pColorAttachments = &colorAttachmentRef;
+		subPass.pDepthStencilAttachment = &depthAttachmentReference;
 
 		// describe subpass dependencies
 		VkSubpassDependency dependency = {};
-		dependency.srcSubpass = VK_SUBPASS_EXTERNAL; // the implicit subpass before or after the render pass depending on whether it is specified in srcSubpass or dstSubpass
-		dependency.dstSubpass = 0; // our subpass, which is the first and only one
+		dependency.srcSubpass = VK_SUBPASS_EXTERNAL;					// the implicit subpass before or after the render pass depending on whether it is specified in srcSubpass or dstSubpass
+		dependency.dstSubpass = 0;										// our subpass, which is the first and only one
 		dependency.srcStageMask = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
-		dependency.srcAccessMask = VK_ACCESS_MEMORY_READ_BIT; // we need to wait for the swap chain to finish reading from the image before we can access it
+		dependency.srcAccessMask = VK_ACCESS_MEMORY_READ_BIT;			// we need to wait for the swap chain to finish reading from the image before we can access it
 		dependency.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
 		dependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
 
-		// create the render pass object
+		// create the render pass object with both attachments
+		std::array<VkAttachmentDescription, 2> attachments = { colorAttachment, depthAttachment };
 		VkRenderPassCreateInfo renderPassInfo = {};
 		renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
-		renderPassInfo.attachmentCount = 1;
-		renderPassInfo.pAttachments = &colorAttachment;
+		renderPassInfo.attachmentCount = attachments.size();
+		renderPassInfo.pAttachments = attachments.data();
 		renderPassInfo.subpassCount = 1;
 		renderPassInfo.pSubpasses = &subPass;
 		renderPassInfo.dependencyCount = 1;
@@ -1566,13 +1613,15 @@ private:
 		// iterate through the image views and create framebuffers from them
 		for (size_t i = 0; i < mSwapChainImageViews.size(); ++i)
 		{
-			VkImageView attachments[] = { mSwapChainImageViews[i] };
+			// the color attachment differs for every swap chain image, but the same depth image can be used
+			// this is because we are only running a single subpass at a time, due to our semaphores
+			std::array<VkImageView, 2> attachments = { mSwapChainImageViews[i], mDepthImageView };
 
 			VkFramebufferCreateInfo framebufferInfo = {};
 			framebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
 			framebufferInfo.renderPass = mRenderPass;
-			framebufferInfo.attachmentCount = 1;
-			framebufferInfo.pAttachments = attachments;
+			framebufferInfo.attachmentCount = attachments.size();
+			framebufferInfo.pAttachments = attachments.data();
 			framebufferInfo.width = mSwapChainExtent.width;
 			framebufferInfo.height = mSwapChainExtent.height;
 			framebufferInfo.layers = 1;
@@ -1628,11 +1677,73 @@ private:
 		std::cout << "Successfully created command pool object." << std::endl;
 	}
 
+	//! create an image that will be used as a depth attachment during rendering
+	void createDepthResource()
+	{
+		VkFormat depthFormat = findDepthFormat();
+
+		// call our helper functions for creating an image and image view
+		createImage(mSwapChainExtent.width, 
+			mSwapChainExtent.height,
+			depthFormat, 
+			VK_IMAGE_TILING_OPTIMAL,
+			VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, 
+			VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 
+			mDepthImage, 
+			mDepthImageMemory);
+
+		createImageView(mDepthImage, depthFormat, VK_IMAGE_ASPECT_DEPTH_BIT, mDepthImageView);
+
+		// we could do this in the render pass, but it only needs to happen once, so we use a pipeline barrier instead
+		// we can use VK_IMAGE_LAYOUT_UNDEFINED as the initial layout because there is no existing image data that matters
+		transitionImageLayout(mDepthImage, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+	}
+
+	//! select a format with a depth component that supports usage as a depth attachment
+	VkFormat findDepthFormat()
+	{	
+		return findSupportedFormat({ VK_FORMAT_D32_SFLOAT, VK_FORMAT_D32_SFLOAT_S8_UINT, VK_FORMAT_D24_UNORM_S8_UINT },
+			VK_IMAGE_TILING_OPTIMAL,
+			VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT);
+	}
+
+	//! given a list of candidate formats, returns the first that is supported by the physical device
+	VkFormat findSupportedFormat(const std::vector<VkFormat>& candidates, VkImageTiling tiling, VkFormatFeatureFlags features)
+	{
+		/*
+		
+		VkFormatProperties will contain three fields:
+		1. linearTilingFeatures: use cases that are supported with linear tiling
+		2. optimalTilingFeatures: use cases that are supported with optimal tiling
+		3. bufferFeatures: use cases that are supported for buffers
+
+		Only 1 and 2 are relevant here, and the one we check depends on the tiling parameter of this function.
+
+		*/
+
+		for (VkFormat format : candidates)
+		{
+			VkFormatProperties props;
+			vkGetPhysicalDeviceFormatProperties(mPhysicalDevice, format, &props);
+
+			if (tiling == VK_IMAGE_TILING_LINEAR && (props.linearTilingFeatures & features) == features)
+			{
+				return format;
+			}
+			else if (tiling == VK_IMAGE_TILING_OPTIMAL && (props.optimalTilingFeatures & features) == features)
+			{
+				return format;
+			}
+		}
+
+		throw std::runtime_error("Failed to find supported format.");
+	}
+
 	//! create an image from a STB image
 	void createTextureImage()
 	{
 		int texWidth, texHeight, texChannels;
-		stbi_uc* pixels = stbi_load("textures/texture.jpg", &texWidth, &texHeight, &texChannels, STBI_rgb_alpha);
+		stbi_uc* pixels = stbi_load(TEXTURE_PATH.c_str(), &texWidth, &texHeight, &texChannels, STBI_rgb_alpha);
 		std::cout << "Loaded STB image file, resolution: " << texWidth << " x " << texHeight << std::endl;
 
 		VkDeviceSize imageSize = texWidth * texHeight * 4;
@@ -1747,11 +1858,20 @@ private:
 		barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED; // we aren't using the barrier to transfer queue family ownership, but this field is still required
 		barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 		barrier.image = image;
-		barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
 		barrier.subresourceRange.baseMipLevel = 0;
 		barrier.subresourceRange.levelCount = 1;
 		barrier.subresourceRange.baseArrayLayer = 0;
 		barrier.subresourceRange.layerCount = 1;
+
+		// select the right subresource aspect mask
+		if (newLayout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
+		{
+			barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+		}
+		else
+		{
+			barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		}
 		
 		// we need to set our srcAccessMask and dstAccessMask based on the transitions we intend to handle
 		// 1. preinitialized -> transfer source: transfer reads should wait on host writes
@@ -1771,6 +1891,11 @@ private:
 		{
 			barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
 			barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+		}
+		else if (oldLayout == VK_IMAGE_LAYOUT_UNDEFINED && newLayout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
+		{
+			barrier.srcAccessMask = 0;
+			barrier.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
 		}
 		else 
 		{
@@ -1822,13 +1947,14 @@ private:
 	//! create an image view that grants access to the texture image
 	void createTextureImageView()
 	{
-		createImageView(mTextureImage, VK_FORMAT_R8G8B8A8_UNORM, mTextureImageView);
+		createImageView(mTextureImage, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_ASPECT_COLOR_BIT, mTextureImageView);
 		std::cout << "Successfully created texture image view for STB image." << std::endl;
 	}
 
 	//! a helper function for creating an image view from an image
 	void createImageView(VkImage image,
 		VkFormat format,
+		VkImageAspectFlags aspectFlags,
 		vk::Deleter<VkImageView>& imageView)
 	{
 		VkImageViewCreateInfo viewInfo = {};
@@ -1836,7 +1962,7 @@ private:
 		viewInfo.image = image;
 		viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
 		viewInfo.format = format;
-		viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		viewInfo.subresourceRange.aspectMask = aspectFlags;	// in this program, will either be VK_IMAGE_ASPECT_COLOR_BIT or VK_IMAGE_ASPECT_DEPTH_BIT (for a depth attachment)
 		viewInfo.subresourceRange.baseMipLevel = 0;
 		viewInfo.subresourceRange.levelCount = 1;
 		viewInfo.subresourceRange.baseArrayLayer = 0;
@@ -1877,6 +2003,53 @@ private:
 		}
 
 		std::cout << "Successfully created texture sampler object." << std::endl;
+	}
+
+	//! loads an obj model from the tinyobjloader library
+	void loadModel()
+	{
+		tinyobj::attrib_t attrib;
+		std::vector<tinyobj::shape_t> shapes;
+		std::vector<tinyobj::material_t> materials;
+		std::string err;
+
+		if (!tinyobj::LoadObj(&attrib, &shapes, &materials, &err, MODEL_PATH.c_str()))
+		{
+			throw std::runtime_error(err);
+		}
+
+		// the vertices vector contains a lot of duplicates because many vertices are included in multiple triangles
+		// keep only the unique vertices and use the index buffer to reuse them whenever they come up
+		std::unordered_map<Vertex, int> uniqueVertices = {};
+
+		for (const auto& shape : shapes)
+		{
+			for (const auto& index : shape.mesh.indices)
+			{
+				Vertex vertex = {};
+
+				vertex.position = {
+					attrib.vertices[3 * index.vertex_index + 0],
+					attrib.vertices[3 * index.vertex_index + 1],
+					attrib.vertices[3 * index.vertex_index + 2]
+				};
+
+				vertex.texcoord = {
+					attrib.texcoords[2 * index.texcoord_index + 0],
+					1.0 - attrib.texcoords[2 * index.texcoord_index + 1] // Vulkan assumes the origin is the top-left corner...
+				};
+
+				if (uniqueVertices.count(vertex) == 0)
+				{
+					uniqueVertices[vertex] = mModelVertices.size();
+					mModelVertices.push_back(vertex);
+				}
+				
+				mModelIndices.push_back(uniqueVertices[vertex]);
+			}
+		}
+
+		std::cout << "Successfully loaded obj model from tinyobjloader with " << mModelVertices.size() << " vertices." << std::endl;
 	}
 
 	//! a helper function for abstracting buffer creation
@@ -1948,7 +2121,7 @@ private:
 
 		*/
 		
-		VkDeviceSize bufferSize = sizeof(vertices[0]) * vertices.size();
+		VkDeviceSize bufferSize = sizeof(mModelVertices[0]) * mModelVertices.size();
 
 		// create a staging buffer
 		vk::Deleter<VkBuffer> stagingBuffer{ mDevice, vkDestroyBuffer };
@@ -1962,7 +2135,7 @@ private:
 		// copy CPU-side vertex data into the staging buffer
 		void* data;
 		vkMapMemory(mDevice, stagingBufferMemory, 0, bufferSize, 0, &data);
-		memcpy(data, vertices.data(), (size_t)bufferSize);
+		memcpy(data, mModelVertices.data(), (size_t)bufferSize);
 		vkUnmapMemory(mDevice, stagingBufferMemory);
 
 		// create a vertex buffer
@@ -1979,7 +2152,7 @@ private:
 	//! create a GPU-side buffer to hold the specified vertex indices
 	void createIndexBuffer()
 	{
-		VkDeviceSize bufferSize = sizeof(indices[0]) * indices.size();
+		VkDeviceSize bufferSize = sizeof(mModelIndices[0]) * mModelIndices.size();
 
 		// create a staging buffer
 		vk::Deleter<VkBuffer> stagingBuffer{ mDevice, vkDestroyBuffer };
@@ -1993,7 +2166,7 @@ private:
 		// copy CPU-side vertex data into the staging buffer
 		void* data;
 		vkMapMemory(mDevice, stagingBufferMemory, 0, bufferSize, 0, &data);
-		memcpy(data, indices.data(), (size_t)bufferSize);
+		memcpy(data, mModelIndices.data(), (size_t)bufferSize);
 		vkUnmapMemory(mDevice, stagingBufferMemory);
 
 		// create a vertex buffer
@@ -2187,9 +2360,13 @@ private:
 			renderPassInfo.renderArea.offset = { 0, 0 };			// the size of the render area
 			renderPassInfo.renderArea.extent = mSwapChainExtent;
 
-			VkClearValue clearColor = { 0.0f, 0.0f, 0.0f, 1.0f };	// the clear values to use for VK_ATTACHMENT_LOAD_OP_CLEAR
-			renderPassInfo.clearValueCount = 1;
-			renderPassInfo.pClearValues = &clearColor;
+			// we now have multiple attachments with VK_ATTACHMENT_LOAD_OP_CLEAR, so we need to specify multiple clear values
+			std::array<VkClearValue, 2> clearValues = {};
+			clearValues[0].color = { 0.0f, 0.0f, 0.0f, 1.0f };
+			clearValues[1].depthStencil = { 1.0f, 0 };
+
+			renderPassInfo.clearValueCount = clearValues.size();
+			renderPassInfo.pClearValues = clearValues.data();
 
 			// begin the render pass
 			vkCmdBeginRenderPass(mCommandBuffers[i], &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
@@ -2206,14 +2383,14 @@ private:
 			vkCmdBindVertexBuffers(mCommandBuffers[i], 0, 1, vertexBuffers, offsets);
 
 			// bind the index buffer
-			vkCmdBindIndexBuffer(mCommandBuffers[i], mIndexBuffer, 0, VK_INDEX_TYPE_UINT16);
+			vkCmdBindIndexBuffer(mCommandBuffers[i], mIndexBuffer, 0, VK_INDEX_TYPE_UINT32);
 
 			// actual draw command:
 			// index count
 			// instance count
 			// first index
 			// first instance
-			vkCmdDrawIndexed(mCommandBuffers[i], indices.size(), 1, 0, 0, 0);
+			vkCmdDrawIndexed(mCommandBuffers[i], mModelIndices.size(), 1, 0, 0, 0);
 
 			// end the render pass
 			vkCmdEndRenderPass(mCommandBuffers[i]);
@@ -2381,6 +2558,7 @@ private:
 		createImageViews();
 		createRenderPass();
 		createGraphicsPipeline();
+		createDepthResource();
 		createFramebuffers();
 		createCommandBuffers();
 	}
@@ -2426,11 +2604,20 @@ private:
 	vk::Deleter<VkBuffer> mUniformBuffer{ mDevice, vkDestroyBuffer };
 	vk::Deleter<VkDeviceMemory> mUniformBufferMemory{ mDevice, vkFreeMemory };
 	
+	/* Depth attachment related */
+	vk::Deleter<VkImage> mDepthImage{ mDevice, vkDestroyImage };
+	vk::Deleter<VkDeviceMemory> mDepthImageMemory{ mDevice, vkFreeMemory };
+	vk::Deleter<VkImageView> mDepthImageView{ mDevice, vkDestroyImageView };
+
 	/* Textures and samplers related */
 	vk::Deleter<VkImage> mTextureImage{ mDevice, vkDestroyImage };
 	vk::Deleter<VkDeviceMemory> mTextureImageMemory{ mDevice, vkFreeMemory };
 	vk::Deleter<VkImageView> mTextureImageView{ mDevice, vkDestroyImageView };
 	vk::Deleter<VkSampler> mTextureSampler{ mDevice, vkDestroySampler };
+
+	/* 3D model related*/
+	std::vector<Vertex> mModelVertices;
+	std::vector<uint32_t> mModelIndices;
 
 	/* Command pool related */
 	vk::Deleter<VkCommandPool> mCommandPool{ mDevice, vkDestroyCommandPool };
